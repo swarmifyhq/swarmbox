@@ -1,0 +1,57 @@
+{
+  "name": "@swarmifyhq/swarmbox",
+  "version": "0.1.0",
+  "description": "A sandbox where AI agents run your product in real browsers against throwaway worlds: they see what is on each screen and what the server did, log findings, and end with checks and a report.",
+  "type": "module",
+  "packageManager": "pnpm@11.11.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "swarmbox": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint --max-warnings 0 .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check",
+    "test": "vitest run test/unit",
+    "test:browser": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@playwright/test": "^1.63.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.0.0",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.4"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swarmifyhq/swarmbox.git"
+  }
+}

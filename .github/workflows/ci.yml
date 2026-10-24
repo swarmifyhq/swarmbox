@@ -1,0 +1,81 @@
+# Swarmbox CI on the Swarmify runner pool: swarmbox-studio-3 (label swarmbox), which shares a slot with
+# Flowology's flow-studio-3 (cores 10-14, 3 GB). Kept light on purpose: vitest at two workers, the browser
+# tests one file at a time, the pnpm store and Chromium cached between runs.
+#
+#   check    typecheck, lint, formatting, build, unit tests, then the browser tests (Chromium): the screens
+#            and what an agent sees on them, and a whole run on the sample product in test/fixtures.
+#   publish  on main only, when package.json's version isn't published yet: to GitHub Packages, where
+#            products of ours install @swarmifyhq/swarmbox with their own GITHUB_TOKEN (packages: read).
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [staging, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: [self-hosted, swarmbox]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm's version comes from package.json's packageManager field.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Typecheck, lint, formatting
+        run: pnpm run check
+      - name: Build
+        run: pnpm run build
+      - name: Unit tests
+        run: pnpm exec vitest run test/unit --maxWorkers=2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Chromium
+        run: pnpm exec playwright install chromium
+      - name: Browser tests
+        run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts --maxWorkers=1
+
+  publish:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, swarmbox]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@swarmifyhq'
+      - name: Install
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Build
+        run: pnpm run build
+      - name: Publish, unless this version already is
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "@swarmifyhq/swarmbox@$v" version >/dev/null 2>&1; then
+            echo "@swarmifyhq/swarmbox@$v is already published"
+          else
+            pnpm publish --no-git-checks
+          fi
