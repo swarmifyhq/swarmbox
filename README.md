@@ -53,7 +53,7 @@ after each action and can move time.
 pnpm install
 pnpm run check          # typecheck, lint, formatting
 pnpm test               # unit tests
-pnpm exec playwright install chromium
+pnpm exec playwright-core install chromium
 pnpm run test:browser   # everything, the browser tests too
 ```
 

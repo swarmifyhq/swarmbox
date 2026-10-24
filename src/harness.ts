@@ -15,7 +15,7 @@ import type {
   Request as PwRequest,
   Response as PwResponse,
   Route,
-} from '@playwright/test';
+} from 'playwright-core';
 import type { CheckResult, Settled } from './checks.ts';
 import { launchFleet, type Fleet, type Screen, type Who } from './fleet/browser.ts';
 import {

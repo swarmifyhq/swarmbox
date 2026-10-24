@@ -14,7 +14,7 @@
 // A factory rather than a class: products run TypeScript through Node's strip-only loader, which does not
 // support parameter properties.
 
-import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import type { Persona, SignIn } from '../product.ts';
 
 /** Makes `*.{baseDomain}` resolve to loopback inside this browser, and nowhere else on the machine. */

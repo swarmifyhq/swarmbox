@@ -7,7 +7,7 @@
 // line, the address); a click that can't land says what is in the way; and when two controls share a name,
 // the one in the open dialog is the one meant.
 
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page } from 'playwright-core';
 
 /** Dialogs, open and showing: `<dialog open>` and anything with a dialog role. */
 const DIALOGS = 'dialog[open], [role="dialog"], [role="alertdialog"]';

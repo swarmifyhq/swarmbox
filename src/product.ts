@@ -8,7 +8,7 @@
 // browsers Swarmbox launches. A product with no tenants has one.
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Page } from '@playwright/test';
+import type { Page } from 'playwright-core';
 import type { CheckResult, Settled } from './checks.ts';
 import type { Harness } from './harness.ts';
 import type { Hooks } from './hooks.ts';

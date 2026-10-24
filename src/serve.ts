@@ -57,9 +57,12 @@ export async function serve<W extends ProductWorld>(
       await harness.shutdown();
       await Promise.all([mcp.close(), room.close()]);
     })());
+  // on, not once: Playwright closes its browsers and exits the process on Ctrl-C when its own handler is
+  // the only one left, which would end everything before the worlds and the product's stores are stopped.
   if (options.handleSignals ?? true)
     for (const signal of ['SIGINT', 'SIGTERM'] as const)
-      process.once(signal, () => {
+      process.on(signal, () => {
+        if (stopping) return;
         log?.(`\n${signal}: stopping every world…`);
         void stop().then(() => process.exit(0));
       });

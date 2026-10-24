@@ -4,7 +4,7 @@
 // is one the 24 Oct run tripped on: a dialog at the end of a long page, two "Send" buttons, a click behind a
 // dialog that timed out with no reason given, and a signature pad only a pointer can sign.
 
-import { chromium, type Browser, type Page } from '@playwright/test';
+import { chromium, type Browser, type Page } from 'playwright-core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   behindModal,
