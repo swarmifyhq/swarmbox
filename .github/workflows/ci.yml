@@ -1,6 +1,8 @@
 # Swarmbox CI on the Swarmify runner pool: swarmbox-studio-3 (label swarmbox), which shares a slot with
 # Flowology's flow-studio-3 (cores 10-14, 3 GB). Kept light on purpose: vitest at two workers, the browser
-# tests one file at a time, the pnpm store and Chromium cached between runs.
+# tests one file at a time, the pnpm store cached between runs. The check job runs in Playwright's own
+# image, which has Chromium and the system libraries it needs (the runner's image has neither); its tag
+# matches playwright-core in pnpm-lock.yaml.
 #
 #   check    typecheck, lint, formatting, build, unit tests, then the browser tests (Chromium): the screens
 #            and what an agent sees on them, and a whole run on the sample product in test/fixtures.
@@ -19,10 +21,15 @@ concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
+# Least privilege by default; publish asks for packages: write itself.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: [self-hosted, swarmbox]
     timeout-minutes: 20
+    container: mcr.microsoft.com/playwright:v1.63.0-noble
     steps:
       - uses: actions/checkout@v4
       # pnpm's version comes from package.json's packageManager field.
@@ -39,12 +46,6 @@ jobs:
         run: pnpm run build
       - name: Unit tests
         run: pnpm exec vitest run test/unit --maxWorkers=2
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
-      - name: Chromium
-        run: pnpm exec playwright-core install chromium
       - name: Browser tests
         run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts --maxWorkers=1
 
