@@ -6,7 +6,7 @@
 // wait has a time limit, and a stand-in that misbehaves is stopped while every world goes on. Nothing it writes
 // reaches the agent unshaped (shape.ts).
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
@@ -80,7 +80,9 @@ export interface StandIn {
 
 /** The kit's own folder: sdk and protocol, which import nothing but Node's built-ins. */
 const KIT_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));
-const LOG_KEPT = 5000;
+const LOG_KEPT = 2000;
+/** Refused deliveries logged per minute; past it, one line says how many more there were. */
+const REFUSALS_LOGGED = 100;
 const MAX_LINE = 32 * 1024 * 1024;
 const READY_MS = 10_000;
 const ASK_MS = 10_000;
@@ -133,6 +135,31 @@ function lines(stream: NodeJS.ReadableStream, onLine: (line: string) => void, on
   });
 }
 
+/** Every process below `root`, from the system's process table. */
+function descendants(root: number): number[] {
+  let table: string;
+  try {
+    table = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000 });
+  } catch {
+    return [];
+  }
+  const children = new Map<number, number[]>();
+  for (const line of table.split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (!pid || ppid === undefined) continue;
+    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  }
+  const out: number[] = [];
+  const walk = (p: number) => {
+    for (const c of children.get(p) ?? []) {
+      out.push(c);
+      walk(c);
+    }
+  };
+  walk(root);
+  return out;
+}
+
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -167,8 +194,16 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
           denyWrite: [],
         },
       });
-      // Its own process group, so stopping it stops anything it started.
-      child = spawn(command, { shell: true, env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+      // No new processes: a stand-in has no need of one, and on macOS a child that starts its own session would
+      // outlive any group kill. The runtime's profile allows fork; this one doesn't.
+      const noFork =
+        process.platform === 'darwin'
+          ? command.replace('(allow process-fork)', '(deny process-fork)')
+          : command;
+      if (process.platform === 'darwin' && noFork === command)
+        throw new Error("the sandbox's profile changed shape: it no longer says (allow process-fork)");
+      // Its own process group too, so stopping it stops anything it is part of.
+      child = spawn(noFork, { shell: true, env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     } else {
       child = spawn(node, [entry], { env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     }
@@ -180,8 +215,18 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
   let stoppedWhy: string | null = null;
   const kill = (why: string) => {
     if (!stoppedWhy) stoppedWhy = why;
+    if (!child.pid) return;
+    // Everything under it, as the system sees it now, then its group: what a stand-in started can't outlive it,
+    // even one that left the group.
+    for (const pid of descendants(child.pid)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
     try {
-      if (child.pid) process.kill(-child.pid, 'SIGKILL');
+      process.kill(-child.pid, 'SIGKILL');
     } catch {
       child.kill('SIGKILL');
     }
@@ -265,13 +310,34 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
   );
   const declared = new Set(manifest.webhooks?.headers ?? []);
   let inFlight = 0;
+  let refusedThisMinute = 0;
+  let refusedDropped = 0;
+  const refusals = setInterval(() => {
+    if (refusedDropped)
+      record({
+        kind: 'refused',
+        operation: null,
+        tenant: null,
+        method: '-',
+        target: '-',
+        status: null,
+        sent: `and ${refusedDropped} more refused`,
+      });
+    refusedThisMinute = 0;
+    refusedDropped = 0;
+  }, 60_000);
+  refusals.unref();
   const refuseDelivery = (url: string, method: string, why: string) => {
+    if (++refusedThisMinute > REFUSALS_LOGGED) {
+      refusedDropped++;
+      return 0;
+    }
     record({
       kind: 'refused',
       operation: null,
       tenant: null,
-      method,
-      target: url.slice(0, 300),
+      method: plain(method, 16),
+      target: plain(url, 300),
       status: null,
       sent: why,
     });
@@ -302,7 +368,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
           operation: null,
           tenant: target.hostname.split('.')[0]!,
           method,
-          target: url,
+          target: plain(url, 500),
           status,
           sent: cut(body),
           answered,
@@ -338,8 +404,10 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
   let holdTimer: NodeJS.Timeout | undefined;
   const deliver = async (m: Record<string, unknown>) => {
     const deliveryId = String(m.id);
-    const url = String(m.url ?? '');
-    const method = String(m.method ?? 'POST').toUpperCase();
+    const url = String(m.url ?? '').slice(0, 4096);
+    const method = String(m.method ?? 'POST')
+      .slice(0, 16)
+      .toUpperCase();
     const body = decode(typeof m.body === 'string' ? m.body : '');
     const run = async () => {
       const status = await post(url, method, m.headers, body);

@@ -191,7 +191,8 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
   - It can write only its own temporary folder.
   - It gets no sockets of any kind and none of the developer's environment. Its only channel is stdin and stdout,
     to Swarmbox.
-  - It runs in its own process group, so stopping it stops anything it started.
+  - It can't start processes: on macOS the sandbox's profile denies fork. Wherever a process does start, stopping
+    the stand-in kills everything under it in the process table, then its process group.
   - Swarmbox's own stand-ins run this way too, so the path every community stand-in takes is always the one in use.
   - Why not let it listen on its own port: on macOS the sandbox's "local binding" setting also allows connecting to
     every local port, which would put a developer's local databases and dev servers in reach.

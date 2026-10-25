@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startStandIn, type StandIn } from '../src/standins/runner.ts';
 
-// Sandboxed wherever the sandbox runs (macOS, and Linux with bubblewrap, as CI has); SWARMBOX_NO_SANDBOX=1 only to
+// Sandboxed wherever the sandbox runs (macOS; Linux once bubblewrap can run there); SWARMBOX_NO_SANDBOX=1 only to
 // run these on a machine without one.
 const SANDBOX = process.env.SWARMBOX_NO_SANDBOX === '1' ? 'off' : 'required';
 const fixture = (name: string) => join(import.meta.dirname, 'fixtures/standins', name);
@@ -39,6 +39,19 @@ beforeAll(async () => {
   productUrl = `http://127.0.0.1:${(product.address() as AddressInfo).port}`;
 });
 afterAll(() => new Promise<void>((r) => product.close(() => r())));
+
+/** Whether a process is gone within two seconds: a SIGKILL lands at once, its exit a moment later. */
+const gone = async (pid: number) => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+};
 
 const waitFor = async <T>(f: () => T | undefined, ms = 3000): Promise<T> => {
   const end = Date.now() + ms;
@@ -192,7 +205,7 @@ describe('a stand-in a product talks to as its provider', () => {
 
 describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
   it('can write its own folder and nothing else, and reach no network at all', async () => {
-    let forked = 0;
+    let forked: number | undefined;
     const secretDir = mkdtempSync(join(tmpdir(), 'swarmbox-secret-'));
     const secret = join(secretDir, 'key');
     writeFileSync(secret, 'not for stand-ins');
@@ -219,19 +232,42 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
       });
       expect(existsSync(outside)).toBe(false);
       expect(r.home).not.toBe(process.env.HOME);
-      forked = Number(r.forked);
+      forked = Number(r.forked ?? 0);
     } finally {
       delete process.env.SWARMBOX_CANARY;
       await s.stop();
       rmSync(secretDir, { recursive: true, force: true });
     }
     // What it started went with it.
-    expect(forked).toBeGreaterThan(0);
-    expect(() => process.kill(forked, 0)).toThrow();
+    // It couldn't start one (macOS), or what it started went with it.
+    if (process.platform === 'darwin') expect(forked).toBe(0);
+    else {
+      expect(forked).toBeGreaterThan(0);
+      expect(await gone(forked!)).toBe(true);
+    }
   });
 });
 
 describe('a stand-in that misbehaves', () => {
+  it('takes what it started with it when it stops, even a process in its own session', async () => {
+    // Unsandboxed on purpose: the sandbox would refuse the fork, and this is the walk that catches it anywhere else.
+    const s = await startStandIn({
+      dir: fixture('hostile'),
+      deliverTo: productUrl,
+      baseDomain: 'sample.test',
+      sandbox: 'off',
+    });
+    const q = new URLSearchParams({
+      port: '9',
+      secret: '/nonexistent',
+      outside: join(tmpdir(), 'swarmbox-never'),
+    });
+    const r = (await (await fetch(`${s.baseUrls.api}/probe?${q}`)).json()) as { forked: number | null };
+    expect(r.forked).toBeGreaterThan(0);
+    await s.stop();
+    expect(await gone(r.forked!)).toBe(true);
+  });
+
   it('is given up on when it never says it is ready', async () => {
     const t0 = Date.now();
     await expect(

@@ -42,9 +42,20 @@ defineStandIn({
         ),
         readSecret: await attempt(() => readFileSync(String(req.query.get('secret')))),
         readSystem: await attempt(() => readFileSync('/etc/hosts')),
-        // A process of its own that would outlive it, if stopping didn't take its whole group.
-        forked:
-          spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }).pid ?? null,
+        // A process of its own in its own session, which would outlive a group kill. Denied in the sandbox on
+        // macOS; anywhere it starts, stopping the stand-in must still take it.
+        forked: await new Promise((done) => {
+          try {
+            const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+              stdio: 'ignore',
+              detached: true,
+            });
+            c.on('error', () => done(null));
+            c.on('spawn', () => done(c.pid ?? null));
+          } catch {
+            done(null); // the sandbox refused it outright
+          }
+        }),
         writeOutside: await attempt(() => writeFileSync(String(req.query.get('outside')), 'x')),
         writeOwn: await attempt(() => writeFileSync(`${ctx.tmp}/ok`, 'x')),
         // A variable the test sets in Swarmbox's own environment: the stand-in must not see it.
