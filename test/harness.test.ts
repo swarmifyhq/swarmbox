@@ -268,6 +268,27 @@ describe('a world of a product Swarmbox knows nothing about', () => {
         );
       expect(await fetched('/landed')).toBe('200 https://pay.example.org/go?to=%2Flanded');
       expect(await fetched(there)).toBe('502 https://pay.example.org/go?to=' + encodeURIComponent(there));
+
+      // Its own address on this machine is reachable, but only through the same checked proxy: a bounce through
+      // it, by a page or a fetch, is refused at the hop that leaves; an upload with its preflight goes through.
+      const own = h.world(w).standins.get('redirector')!.origin;
+      const bounce = `${own}/go?to=${encodeURIComponent(there)}`;
+      expect(await fetched(bounce)).toMatch(/^502 /);
+      await go(bounce);
+      await expect
+        .poll(() => page.locator('body').textContent())
+        .toContain('refused a redirect out of the world');
+      expect((await page.goto(bounce))?.status()).toBe(502);
+      await page.goto('/');
+      const put = await page.evaluate(
+        (u) =>
+          fetch(u, { method: 'PUT', headers: { 'x-upload': '1' }, body: 'four' }).then(
+            async (r) => `${r.status} ${await r.text()}`,
+            () => 'blocked',
+          ),
+        `${own}/cors`,
+      );
+      expect(put).toBe('200 stored 4');
       expect(hits).toBe(0);
     } finally {
       outside.close();

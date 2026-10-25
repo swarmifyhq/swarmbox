@@ -197,7 +197,8 @@ describe('provider origins in the browser', () => {
       baseDomain: 'sample.test',
       port: 3094,
       routes: [{ origin: 'https://secure.helcim.app', to: 'http://127.0.0.1:5001' }],
-      allowOrigins: ['http://127.0.0.1:5002', 'https://fonts.example.net'],
+      standins: ['http://127.0.0.1:5002'],
+      allowOrigins: ['https://fonts.example.net'],
     };
     for (const url of [
       'http://acme.sample.test:3094/jobs',

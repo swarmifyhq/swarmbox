@@ -237,8 +237,13 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
   - A world whose browsers play a provider's pages is contained: they reach only the world's hosts, the routed
     origins, the world's stand-ins and `Product.browserAllow` (what the product loads from outside: fonts, maps).
     Every other request and WebSocket is blocked.
-  - The routed pages carry a CSP of their own origin only, replacing any the stand-in sends. Swarmbox fetches them
-    without following redirects; a redirect goes back to the contained browser.
+  - The routed pages carry a CSP of their own origin only, replacing any the stand-in sends.
+  - A stand-in's redirects are Swarmbox's to follow, never the browser's, since a browser's next hop skips the
+    routes: out of the world is refused (502); to a routed origin or a stand-in's own address, a page is sent on
+    afresh and anything else is followed by Swarmbox, each hop checked. The stand-ins' own addresses on this
+    machine (a presigned upload's) are reached through the same proxy.
+  - The product is trusted. An open redirect of its own is a way out a stand-in could bounce the browser through,
+    so a product run with stand-ins in the browser shouldn't have one.
 - **A fake key can never work in production.**
   - Every credential a stand-in issues carries a mark, and Swarmbox checks each account before using it:
     - ids, secrets and text carry the word `swarmbox`, or the hex mark `c0ffee5b` where only hex will do (a

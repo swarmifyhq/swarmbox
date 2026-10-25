@@ -465,7 +465,8 @@ export function createHarness<W extends ProductWorld>(
         routes: browserRoutes(standins),
         // Where a world's browsers may still go when they play a provider's pages: its stand-ins, and what the
         // product loads from outside.
-        allowOrigins: [...[...standins.values()].map((s) => s.origin), ...(product.browserAllow ?? [])],
+        standins: [...standins.values()].map((s) => s.origin),
+        allowOrigins: product.browserAllow ?? [],
       });
       return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map(), standins };
     } catch (e) {
