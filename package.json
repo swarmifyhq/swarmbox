@@ -1,5 +1,5 @@
 {
-  "name": "@swarmifyhq/swarmbox",
+  "name": "swarmbox",
   "license": "MIT",
   "version": "0.11.0",
   "description": "A sandbox where AI agents run your product in real browsers against throwaway worlds: they see what is on each screen and what the server did, log findings, and end with checks and a report.",
@@ -52,10 +52,22 @@
     "vitest": "^5.0.4"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/swarmifyhq/swarmbox.git"
-  }
+    "url": "git+https://github.com/swarmifyhq/swarmbox.git"
+  },
+  "homepage": "https://github.com/swarmifyhq/swarmbox#readme",
+  "bugs": "https://github.com/swarmifyhq/swarmbox/issues",
+  "keywords": [
+    "testing",
+    "e2e",
+    "ai-agents",
+    "mcp",
+    "playwright",
+    "sandbox",
+    "mock-server",
+    "webhooks"
+  ]
 }
