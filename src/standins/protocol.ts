@@ -42,7 +42,8 @@ export interface WireResponse {
 
 /** Swarmbox to the stand-in. */
 export type ToStandIn =
-  | { type: 'start'; baseDomain: string; clock: ClockState | null; tmp: string }
+  /** origin: the stand-in's own address, http://127.0.0.1:<port>, for links it gives out (a recording's URL). */
+  | { type: 'start'; baseDomain: string; clock: ClockState | null; tmp: string; origin: string }
   | ({
       type: 'request';
       id: string;
