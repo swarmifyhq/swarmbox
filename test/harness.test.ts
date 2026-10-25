@@ -183,6 +183,35 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await call('screen_close', { screen });
   });
 
+  it('plays a provider’s pages in the browser at the provider’s own address: a card form that pays', async () => {
+    const made = await call('world_create', { tenants: ['south'], standins: ['helcim'] });
+    const w = /^(w\d+)/.exec(made.text)![1]!;
+    const cards = h.world(w).world.cards!;
+    const init = await fetch(`${cards.api}/helcim-pay/initialize`, {
+      method: 'POST',
+      headers: { 'api-token': cards.accounts.get('south')!.apiToken!, 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentType: 'purchase', amount: 135.45, currency: 'CAD' }),
+    });
+    const { checkoutToken } = (await init.json()) as { checkoutToken: string };
+    const opened = await call('screen_open', {
+      world: w,
+      person: 'south-ana',
+      path: `/pay?token=${checkoutToken}`,
+    });
+    const page = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!).screen.page;
+    const form = page.frameLocator('#helcimPayIframe');
+    await form.getByLabel('Card number').fill('4111 1111 1111 1111');
+    await form.getByLabel('Expiry (MM/YY)').fill('12/31');
+    await form.getByLabel('CVV').fill('123');
+    await form.getByLabel('Name on card').fill('Ana');
+    await form.getByRole('button', { name: 'Pay $135.45' }).click();
+    // The page heard Helcim's message from Helcim's own origin, so its origin check passes as it would live.
+    await expect
+      .poll(() => page.locator('#payment').textContent())
+      .toBe('https://secure.helcim.app SUCCESS 135.45');
+    await call('world_destroy', { world: w });
+  });
+
   it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {
     const made = await call('world_create', { tenants: ['east'], options: { closed: ['east'] } });
     expect(made.text).toContain('east is closed for the season');

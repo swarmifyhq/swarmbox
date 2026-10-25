@@ -48,6 +48,11 @@ export interface FleetOptions {
   headless?: boolean;
   /** Slow actions down so a person can follow along. Milliseconds between operations. */
   slowMo?: number;
+  /**
+   * Provider pages a stand-in plays in the browser (a card form's script and iframe): every request to `origin`
+   * is answered by the stand-in at `to`, so the page keeps the provider's origin and its origin checks pass.
+   */
+  routes?: { origin: string; to: string }[];
 }
 
 /**
@@ -201,6 +206,29 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
+      for (const r of options.routes ?? [])
+        await context.route(`${r.origin}/**`, async (route) => {
+          const req = route.request();
+          const u = new URL(req.url());
+          try {
+            const res = await fetch(`${r.to}${u.pathname}${u.search}`, {
+              method: req.method(),
+              headers: Object.fromEntries(
+                Object.entries(await req.allHeaders()).filter(([k]) => !/^(host|cookie|:)/i.test(k)),
+              ),
+              ...(req.method() === 'GET' || req.method() === 'HEAD'
+                ? {}
+                : { body: new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0)) }),
+            });
+            await route.fulfill({
+              status: res.status,
+              headers: Object.fromEntries(res.headers),
+              body: Buffer.from(await res.arrayBuffer()),
+            });
+          } catch {
+            await route.abort('connectionrefused').catch(() => undefined);
+          }
+        });
       let page: Page;
       try {
         // The screen's own set-up (its device): inside, so a failure there closes the half-made context too.

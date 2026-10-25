@@ -39,6 +39,7 @@ import {
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import { isThisMachine } from './standins/guard.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
 import {
   setLocation,
@@ -461,6 +462,7 @@ export function createHarness<W extends ProductWorld>(
         port: world.port,
         headless: options.headless ?? false,
         ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
+        routes: browserRoutes(standins),
       });
       return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map(), standins };
     } catch (e) {
@@ -471,6 +473,24 @@ export function createHarness<W extends ProductWorld>(
       }
       throw e;
     }
+  }
+
+  /**
+   * The provider pages each stand-in plays in the world's browsers, from its manifest. Never an origin that would
+   * pass for the product's own (its base domain, a tenant's host, this machine): a stand-in plays providers only.
+   */
+  function browserRoutes(standins: Map<string, StandIn>): { origin: string; to: string }[] {
+    const routes: { origin: string; to: string }[] = [];
+    for (const s of standins.values())
+      for (const o of s.manifest.connect.browser?.origins ?? []) {
+        const host = new URL(o).hostname;
+        const ours =
+          product.baseDomain && (host === product.baseDomain || host.endsWith(`.${product.baseDomain}`));
+        if (ours || isThisMachine(host) || !o.startsWith('https://'))
+          throw new HarnessError(`the ${s.manifest.name} stand-in may not play ${o} in the browser`);
+        routes.push({ origin: new URL(o).origin, to: s.origin });
+      }
+    return routes;
   }
 
   function wantsStandIns(spec: WorldSpec): boolean {

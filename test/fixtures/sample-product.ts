@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { hooksFor, type Hooks } from '../../src/hooks.ts';
 import type { CheckResult, Settled } from '../../src/checks.ts';
 import type { Persona, Product, ProductWorld, SignIn, StandInEndpoint } from '../../src/product.ts';
+import { builtinStandIn } from '../../src/standins/builtin/index.ts';
 
 export const BASE_DOMAIN = 'sample.test';
 const TOKEN = 't'.repeat(43);
@@ -110,6 +111,8 @@ export interface SampleWorld extends ProductWorld {
   receipts: string[];
   /** Files people uploaded, as received. */
   uploads: { tenant: string; name: string; body: Buffer }[];
+  /** Each shop's Helcim account and its API's address, when the world has the Helcim stand-in. */
+  cards: { api: string; accounts: Map<string, Record<string, string>> } | null;
 }
 
 async function startSample(
@@ -118,7 +121,11 @@ async function startSample(
   closed: string[] = [],
   texts?: StandInEndpoint,
   failStop = false,
+  cards?: StandInEndpoint,
 ): Promise<SampleWorld> {
+  // With the Helcim stand-in, each shop has a payments account, for its own pay page.
+  const cardAccounts = new Map<string, Record<string, string>>();
+  if (cards) for (const t of tenants) cardAccounts.set(t, await cards.account(t));
   // With the postbox stand-in, each shop has its own account there, and texts really go through it.
   const textAccounts = new Map<string, Record<string, string>>();
   if (texts) for (const t of tenants) textAccounts.set(t, await texts.account(t));
@@ -191,6 +198,20 @@ async function startSample(
         return res
           .writeHead(200, { 'content-type': 'text/html' })
           .end('<title>Estimate</title><h1>Your estimate</h1>');
+      if (url.pathname === '/pay') {
+        // A pay page as a product makes one: HelcimPay.js from Helcim's own address, its iframe, and its message.
+        const token = JSON.stringify(url.searchParams.get('token') ?? '');
+        return res
+          .writeHead(200, { 'content-type': 'text/html' })
+          .end(
+            `<!doctype html><title>Pay</title><h1>Pay your invoice</h1><p id="payment" aria-label="Payment"></p>` +
+              `<script src="https://secure.helcim.app/helcim-pay/services/start.js"></script><script>` +
+              `addEventListener('message', (e) => { if (e.data && e.data.eventName === 'helcim-pay-js-' + ${token}) ` +
+              `document.getElementById('payment').textContent = e.origin + ' ' + e.data.eventStatus + ' ' + ` +
+              `(e.data.eventStatus === 'SUCCESS' ? JSON.parse(e.data.eventMessage).data.amount : ''); });` +
+              `appendHelcimPayIframe(${token});</script>`,
+          );
+      }
       if (url.pathname === '/api/upload' && req.method === 'POST') {
         uploads.push({ tenant, name: url.searchParams.get('name') ?? '', body: raw });
         return json(200, { ok: true });
@@ -267,6 +288,7 @@ async function startSample(
     requests,
     receipts,
     uploads,
+    cards: cards ? { api: cards.baseUrls.api!, accounts: cardAccounts } : null,
     people: async () => tenants.flatMap(PEOPLE),
     signIn: async (p, app): Promise<SignIn> =>
       app === 'tech'
@@ -326,10 +348,14 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         (spec.options?.closed as string[] | undefined) ?? [],
         spec.endpoints?.postbox,
         spec.options?.failStop === true,
+        spec.endpoints?.helcim,
       ),
     baseDomain: BASE_DOMAIN,
     // Only in a world that asks for it, so the other tests start no stand-in.
-    standins: [{ name: 'postbox', dir: join(import.meta.dirname, 'standins/postbox'), always: false }],
+    standins: [
+      { name: 'postbox', dir: join(import.meta.dirname, 'standins/postbox'), always: false },
+      builtinStandIn('helcim', { always: false }),
+    ],
     worldOptions: {
       closed: z.array(z.string()).optional().describe('Shops closed for the season'),
       failStop: z.boolean().optional().describe('Its stop fails, as a product that won’t shut down cleanly'),
