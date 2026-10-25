@@ -78,6 +78,43 @@ export interface StandIn {
   stop(): Promise<void>;
 }
 
+/** The sandbox runtime's own helpers (on Linux, the seccomp program it runs before the command): real path, since
+ * a package manager keeps it behind symlinks. */
+const RUNTIME_VENDOR = (() => {
+  try {
+    const entry = fileURLToPath(import.meta.resolve('@anthropic-ai/sandbox-runtime'));
+    let d = dirname(entry);
+    while (!existsSync(join(d, 'package.json')) && dirname(d) !== d) d = dirname(d);
+    return realpathSync(join(d, 'vendor'));
+  } catch {
+    return null;
+  }
+})();
+
+/**
+ * What the system needs readable for Node to start at all, beyond Node's own folder: on Linux the dynamic loader,
+ * the C and C++ libraries and /proc (Node reads its own there); on macOS the OpenSSL settings it reads as it starts.
+ */
+const SYSTEM_READS: string[] = [
+  ...(RUNTIME_VENDOR ? [RUNTIME_VENDOR] : []),
+  ...(process.platform === 'darwin' ? ['/System/Library/OpenSSL'] : []),
+  ...(process.platform === 'linux'
+    ? [
+        '/lib',
+        '/lib64',
+        '/usr/lib',
+        '/usr/lib64',
+        '/etc/ld.so.cache',
+        '/etc/ld.so.conf',
+        '/etc/ld.so.conf.d',
+        '/proc',
+        '/dev',
+      ]
+        .filter((p) => existsSync(p))
+        .map((p) => realpathSync(p))
+    : []),
+];
+
 /** The kit's own folder: sdk and protocol, which import nothing but Node's built-ins. */
 const KIT_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));
 const LOG_KEPT = 2000;
@@ -197,16 +234,10 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       const sm = await sandbox();
       const command = await sm.wrapWithSandbox(`'${node}' '${entry}'`, undefined, {
         filesystem: {
-          // Nothing to read but what it runs on: its own package, Node, the kit, its own folder (and, on macOS,
-          // the OpenSSL settings Node reads as it starts). The rest of the disk is not there for it.
+          // Nothing to read but what it runs on: its own package, Node, the kit, its own folder, and what the
+          // system needs to start Node (SYSTEM_READS). The rest of the disk is not there for it.
           denyRead: ['/'],
-          allowRead: [
-            dir,
-            dirname(dirname(node)),
-            KIT_DIR,
-            tmp,
-            ...(process.platform === 'darwin' ? ['/System/Library/OpenSSL'] : []),
-          ],
+          allowRead: [dir, dirname(dirname(node)), KIT_DIR, tmp, ...SYSTEM_READS],
           allowWrite: [tmp],
           denyWrite: [],
         },

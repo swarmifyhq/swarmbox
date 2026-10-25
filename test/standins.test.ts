@@ -14,6 +14,8 @@ import { startStandIn, type StandIn } from '../src/standins/runner.ts';
 // Sandboxed wherever the sandbox runs (macOS; Linux once bubblewrap can run there); SWARMBOX_NO_SANDBOX=1 only to
 // run these on a machine without one.
 const SANDBOX = process.env.SWARMBOX_NO_SANDBOX === '1' ? 'off' : 'required';
+/** A stand-in's own stderr on the test's, so a CI run says why one stopped. */
+const showStderr = (t: string) => process.stderr.write(t);
 const fixture = (name: string) => join(import.meta.dirname, 'fixtures/standins', name);
 
 /** A product that takes webhooks, as a real one behind one port serves every tenant's host. */
@@ -96,6 +98,7 @@ describe('a stand-in a product talks to as its provider', () => {
 
   beforeAll(async () => {
     s = await startStandIn({
+      onStderr: showStderr,
       dir: fixture('postbox'),
       deliverTo: productUrl,
       baseDomain: 'sample.test',
@@ -227,6 +230,7 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
     writeFileSync(secret, 'not for stand-ins');
     process.env.SWARMBOX_CANARY = 'leaked';
     const s = await startStandIn({
+      onStderr: showStderr,
       dir: fixture('hostile'),
       deliverTo: productUrl,
       baseDomain: 'sample.test',
@@ -268,6 +272,7 @@ describe('a stand-in that misbehaves', () => {
   it('takes what it started with it when it stops, even a process in its own session', async () => {
     // Unsandboxed on purpose: the sandbox would refuse the fork, and this is the walk that catches it anywhere else.
     const s = await startStandIn({
+      onStderr: showStderr,
       dir: fixture('hostile'),
       deliverTo: productUrl,
       baseDomain: 'sample.test',
@@ -288,6 +293,7 @@ describe('a stand-in that misbehaves', () => {
     const t0 = Date.now();
     await expect(
       startStandIn({
+        onStderr: showStderr,
         dir: fixture('silent'),
         deliverTo: productUrl,
         baseDomain: 'sample.test',
@@ -300,6 +306,7 @@ describe('a stand-in that misbehaves', () => {
 
   it('can’t break Swarmbox, reach past its world, hand out an unmarked key or steer the agent', async () => {
     const s = await startStandIn({
+      onStderr: showStderr,
       dir: fixture('garbler'),
       deliverTo: productUrl,
       baseDomain: 'sample.test',
