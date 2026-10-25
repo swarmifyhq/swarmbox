@@ -13,6 +13,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { failing, formatReport } from '../checks.ts';
+import { DEVICES, type Device } from '../fleet/browser.ts';
 import { describeProvenance } from '../provenance.ts';
 import { HarnessError, type Action, type Harness } from '../harness.ts';
 import type { ProductWorld } from '../product.ts';
@@ -349,15 +350,28 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             'The client address the server sees. Default: a new one per screen. Give several screens one ' +
               'address to put them behind one router (a crew on shop wifi, a carrier’s shared address).',
           ),
+        device: z
+          .enum(Object.keys(DEVICES) as [Device, ...Device[]])
+          .optional()
+          .describe(
+            'The device: desktop, phone, tablet (landscape) or tablet-portrait. Default the app’s own (desktop ' +
+              'for the main app). A customer’s link on a phone is how most customers open one.',
+          ),
+        colorScheme: z
+          .enum(['light', 'dark'])
+          .optional()
+          .describe('The appearance the device’s system asks for. Default light'),
       },
     },
-    async ({ world, person, link, path, address, app }) =>
+    async ({ world, person, link, path, address, app, device, colorScheme }) =>
       guard(async () => {
         if (Boolean(person) === Boolean(link))
           throw new HarnessError('give person (from persona_list) or link (a customer’s), not both');
+        const look = { ...(device ? { device } : {}), ...(colorScheme ? { colorScheme } : {}) };
         const s = link
-          ? await h.openLink(world, link, address ? { address } : {})
+          ? await h.openLink(world, link, { ...look, ...(address ? { address } : {}) })
           : await h.openScreen(world, person!, path, {
+              ...look,
               ...(address ? { address } : {}),
               ...(app ? { app } : {}),
             });

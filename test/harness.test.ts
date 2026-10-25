@@ -119,6 +119,38 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(h.world(world).world.requests).toContain('north GET /p/north/e/abc');
   });
 
+  it('opens a screen as a phone or a turned tablet, light or dark', async () => {
+    const look = async (args: Record<string, unknown>) => {
+      const opened = await call('screen_open', { world, ...args });
+      expect(opened.error, opened.text).toBe(false);
+      const s = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!);
+      // The screen's size, not the page's layout width: a page with no viewport tag is laid out at 980 px on a
+      // phone, as a real one does.
+      return {
+        ...s.screen.page.viewportSize(),
+        ...(await s.screen.page.evaluate(() => ({
+          touch: matchMedia('(pointer: coarse)').matches,
+          dark: matchMedia('(prefers-color-scheme: dark)').matches,
+        }))),
+      };
+    };
+    // A customer on a phone, at night.
+    expect(await look({ link: '/p/north/e/abc', device: 'phone', colorScheme: 'dark' })).toEqual({
+      width: 390,
+      height: 844,
+      touch: true,
+      dark: true,
+    });
+    // The tablet app turned to portrait: the device wins over the app's own landscape.
+    expect(await look({ person: 'south-ben', app: 'tech', device: 'tablet-portrait' })).toMatchObject({
+      width: 820,
+      height: 1180,
+      dark: false,
+    });
+    const odd = await call('screen_open', { world, person: 'north-ana', device: 'watch' });
+    expect(odd.error).toBe(true);
+  });
+
   it('moves the clock, and every screen follows', async () => {
     const before = Date.now();
     const moved = await call('world_clock', { world, jumpMs: 86_400_000 });

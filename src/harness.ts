@@ -17,7 +17,7 @@ import type {
   Route,
 } from 'playwright-core';
 import type { CheckResult, Settled } from './checks.ts';
-import { launchFleet, type Fleet, type Screen, type Who } from './fleet/browser.ts';
+import { launchFleet, type Appearance, type Fleet, type Screen, type Who } from './fleet/browser.ts';
 import {
   behindModal,
   changes,
@@ -142,7 +142,7 @@ async function portFree(port: number): Promise<boolean> {
   });
 }
 
-export interface OpenScreenOptions {
+export interface OpenScreenOptions extends Appearance {
   address?: string;
   /** One of the product's apps (Product.apps); default its main one. */
   app?: string;
@@ -167,7 +167,7 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
    * Open a customer's link (an estimate, an invoice, an invitation) as the customer would: a browser with no
    * sign-in, on the tenant's own host. The full link or just its path.
    */
-  openLink(worldId: string, link: string, options?: { address?: string }): Promise<ScreenEntry>;
+  openLink(worldId: string, link: string, options?: Appearance & { address?: string }): Promise<ScreenEntry>;
   /** Change what a screen's network does: airplane mode, a signal that stalls, a slow one, or back to normal. */
   setNetwork(screenId: string, mode: NetworkMode): Promise<void>;
   screens(): ScreenEntry[];
@@ -526,6 +526,8 @@ export function createHarness<W extends ProductWorld>(
     };
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
       ...(options.address ? { address: options.address } : {}),
+      ...(options.device ? { device: options.device } : {}),
+      ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
       onContext: (ctx) => {
         ctx.on('console', (m) => {
           // A 4xx is the server refusing something, which the app handles and shows (a conflict, a

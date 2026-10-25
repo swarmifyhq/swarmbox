@@ -33,6 +33,25 @@ export interface FleetOptions {
 }
 
 /**
+ * The devices a screen can be. A sign-in's own viewport (a product's tablet app) is the default for that
+ * app; a device named when the screen opens wins over it, so the same app can be tried on a phone or turned
+ * to portrait. Sizes are CSS pixels of common devices: a 6.1" phone, an 11" tablet each way, a laptop.
+ */
+export const DEVICES = {
+  desktop: { viewport: { width: 1440, height: 900 } },
+  phone: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 },
+  tablet: { viewport: { width: 1180, height: 820 }, hasTouch: true, deviceScaleFactor: 2 },
+  'tablet-portrait': { viewport: { width: 820, height: 1180 }, hasTouch: true, deviceScaleFactor: 2 },
+} as const;
+export type Device = keyof typeof DEVICES;
+
+/** How a screen looks: its device and the light or dark appearance its system asks for. */
+export interface Appearance {
+  device?: Device;
+  colorScheme?: 'light' | 'dark';
+}
+
+/**
  * Who a screen is for: a signed-in person, or someone with only a link, a customer, whose browser has no
  * sign-in at all (signIn null).
  */
@@ -56,7 +75,7 @@ export interface Fleet {
   open(
     who: Who,
     path?: string,
-    options?: {
+    options?: Appearance & {
       address?: string;
       /** Called with the new context before it loads anything, so nothing it does is missed. */
       onContext?: (context: BrowserContext) => void;
@@ -120,10 +139,11 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
      * the same path a real client's takes. Defaults come from 198.18.0.0/15, a range reserved for testing.
      * Giving several screens one address is how a crew behind one router is simulated.
      */
-    async open(who, path = '/', { address, onContext } = {}) {
+    async open(who, path = '/', { address, onContext, device, colorScheme } = {}) {
       const signIn = who.signIn;
       const localStorage = signIn?.localStorage;
       const viewport = signIn?.viewport;
+      const shape = device ? DEVICES[device] : viewport ? { viewport, hasTouch: true } : {};
       const origin = originFor(who.persona.tenant);
       const n = nextAddress++;
       const ip = address ?? `198.18.${Math.floor(n / 256) % 256}.${n % 256}`;
@@ -134,7 +154,8 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         // The server runs in UTC; a person's browser runs where they are. "Today", "Yesterday" and the
         // year on a byline are decided here, so this machine's zone must not leak in.
         timezoneId: who.persona.timeZone,
-        ...(viewport ? { viewport, hasTouch: true } : {}),
+        ...shape,
+        ...(colorScheme ? { colorScheme } : {}),
       });
       // Before the app's scripts run, and only where absent: how a tablet that is already signed in is
       // opened (an app that keeps its tokens there), without putting back what the app later rewrites.
