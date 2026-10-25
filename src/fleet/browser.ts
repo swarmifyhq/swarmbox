@@ -53,6 +53,45 @@ export interface FleetOptions {
    * is answered by the stand-in at `to`, so the page keeps the provider's origin and its origin checks pass.
    */
   routes?: { origin: string; to: string }[];
+  /**
+   * With routes, where else the browsers may go: the world's stand-ins and what the product loads from outside.
+   * A routed provider page is the stand-in's own code in the browser, so the world's browsers then reach only the
+   * world's hosts, the routed origins and these; every other request and WebSocket is blocked.
+   */
+  allowOrigins?: string[];
+}
+
+/** What a page a stand-in plays may load and talk to: its own origin, nothing else. */
+const ROUTED_CSP =
+  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-src 'self'; base-uri 'none'";
+
+/** Whether a URL is inside a world whose browsers play a provider's pages (see FleetOptions.allowOrigins). */
+export function insideWorld(url: string, options: FleetOptions): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'about:') return true;
+  const plain = u.protocol === 'ws:' ? 'http:' : u.protocol === 'wss:' ? 'https:' : u.protocol;
+  const origin = `${plain}//${u.host}`;
+  const world =
+    plain === 'http:' &&
+    Number(u.port || 80) === options.port &&
+    (u.hostname === options.baseDomain || u.hostname.endsWith(`.${options.baseDomain}`));
+  return (
+    world ||
+    (options.routes ?? []).some((r) => r.origin === origin) ||
+    (options.allowOrigins ?? []).some((o) => {
+      try {
+        return new URL(o).origin === origin;
+      } catch {
+        return false;
+      }
+    })
+  );
 }
 
 /**
@@ -206,29 +245,53 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
+      if (options.routes?.length) {
+        // Contained: nothing leaves the world but to its stand-ins and what the product loads from outside.
+        await context.route(
+          (url) => !insideWorld(url.href, options),
+          (route) => route.abort('blockedbyclient'),
+        );
+        await context.routeWebSocket(
+          (url) => !insideWorld(url.href, options),
+          (ws) => ws.close({ code: 1008, reason: 'outside the world' }),
+        );
+      }
       for (const r of options.routes ?? [])
-        await context.route(`${r.origin}/**`, async (route) => {
-          const req = route.request();
-          const u = new URL(req.url());
-          try {
-            const res = await fetch(`${r.to}${u.pathname}${u.search}`, {
-              method: req.method(),
-              headers: Object.fromEntries(
-                Object.entries(await req.allHeaders()).filter(([k]) => !/^(host|cookie|:)/i.test(k)),
-              ),
-              ...(req.method() === 'GET' || req.method() === 'HEAD'
-                ? {}
-                : { body: new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0)) }),
-            });
-            await route.fulfill({
-              status: res.status,
-              headers: Object.fromEntries(res.headers),
-              body: Buffer.from(await res.arrayBuffer()),
-            });
-          } catch {
-            await route.abort('connectionrefused').catch(() => undefined);
-          }
-        });
+        // Matched by exact origin, never by a pattern a manifest could widen.
+        await context.route(
+          (url) => url.origin === r.origin,
+          async (route) => {
+            const req = route.request();
+            const u = new URL(req.url());
+            try {
+              const res = await fetch(`${r.to}${u.pathname}${u.search}`, {
+                method: req.method(),
+                headers: Object.fromEntries(
+                  Object.entries(await req.allHeaders()).filter(([k]) => !/^(host|cookie|:)/i.test(k)),
+                ),
+                ...(req.method() === 'GET' || req.method() === 'HEAD'
+                  ? {}
+                  : { body: new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0)) }),
+                // Its redirect goes back to the browser, which is contained; Swarmbox never follows one itself.
+                redirect: 'manual',
+              });
+              const headers = Object.fromEntries(
+                [...res.headers].filter(
+                  // fetch has already decoded the body, and the stand-in's own CSP is replaced by ours.
+                  ([k]) =>
+                    !/^(content-encoding|content-length|transfer-encoding|content-security-policy)$/i.test(k),
+                ),
+              );
+              await route.fulfill({
+                status: res.status,
+                headers: { ...headers, 'content-security-policy': ROUTED_CSP },
+                body: Buffer.from(await res.arrayBuffer()),
+              });
+            } catch {
+              await route.abort('connectionrefused').catch(() => undefined);
+            }
+          },
+        );
       let page: Page;
       try {
         // The screen's own set-up (its device): inside, so a failure there closes the half-made context too.

@@ -1,0 +1,11 @@
+{
+  "name": "lurker",
+  "provider": "Lurker",
+  "apiVersion": "v1",
+  "surfaces": ["nothing"],
+  "operations": [{ "name": "ok", "method": "GET", "path": "/ok" }],
+  "connect": { "baseUrls": { "api": "/" }, "browser": { "origins": ["https://cdn.example.com"] } },
+  "accounts": { "fields": { "key": "secret" } },
+  "behaviours": ["fail"],
+  "clock": "real"
+}

@@ -10,11 +10,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import { defineStandIn, json, type Reply, type StandInContext, type StandInRequest } from '../../sdk.ts';
 import manifest from './manifest.json' with { type: 'json' };
 
-/** Helcim's hash over a result: its JSON with non-ASCII as \uXXXX, then the secret token. */
+/**
+ * Helcim's hash over a result, as its documentation computes it: sha256(json_encode($data) . $secretToken). PHP's
+ * json_encode with its default flags escapes "/" as "\/" and everything past ASCII as \uXXXX (each UTF-16 unit,
+ * lowercase hex), and leaves DEL (\u007f) as it is.
+ */
 export function helcimHash(data: unknown, secretToken: string): string {
-  const text = JSON.stringify(data).replace(
-    /[\u007f-￿]/g,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  const text = JSON.stringify(data).replace(/[/\u0080-\uffff]/g, (c) =>
+    c === '/' ? '\\/' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
   );
   return createHash('sha256')
     .update(text + secretToken)
@@ -74,7 +77,19 @@ const txns = new Map<number, Txn>();
 const sessions = new Map<string, Session>();
 const customers = new Map<number, Customer>();
 const cards = new Map<number, Card>();
-const idempotent = new Map<string, Txn>();
+/**
+ * Idempotency keys, as Helcim keeps them: per account and operation, five minutes on the world's clock. The same key
+ * and body answer the first result; another body under the same key is refused.
+ */
+const idempotent = new Map<string, { txn: Txn; body: string; at: number }>();
+const KEY_KEPT_MS = 5 * 60_000;
+/** A checkout lasts 60 minutes (Helcim's documentation). */
+const CHECKOUT_MS = 60 * 60_000;
+/** Forget what Helcim would have: checkouts past their hour, idempotency keys past five minutes. */
+function sweep(now: number) {
+  for (const [token, s] of sessions) if (now - s.created > CHECKOUT_MS) sessions.delete(token);
+  for (const [key, k] of idempotent) if (now - k.at > KEY_KEPT_MS) idempotent.delete(key);
+}
 let nextTxn = 30_000_000;
 let nextCustomer = 9000;
 let nextCard = 70_000;
@@ -262,6 +277,7 @@ defineStandIn({
         done: false,
         created: ctx.now().getTime(),
       };
+      sweep(s.created);
       sessions.set(s.token, s);
       return json(200, { checkoutToken: s.token, secretToken: s.secret });
     },
@@ -272,7 +288,7 @@ defineStandIn({
     }),
     'browser.checkout': (req, ctx) => {
       const s = sessions.get(req.params.token!);
-      if (!s || s.done || ctx.now().getTime() - s.created > 60 * 60_000)
+      if (!s || s.done || ctx.now().getTime() - s.created > CHECKOUT_MS)
         return {
           status: 404,
           headers: { 'content-type': 'text/html' },
@@ -282,7 +298,8 @@ defineStandIn({
     },
     'browser.pay': (req, ctx) => {
       const s = sessions.get(req.params.token!);
-      if (!s || s.done) return json(200, { status: 'FAILED', message: 'This checkout has expired.' });
+      if (!s || s.done || ctx.now().getTime() - s.created > CHECKOUT_MS)
+        return json(200, { status: 'FAILED', message: 'This checkout has expired.' });
       let b: { number?: string; expiry?: string; cvv?: string; name?: string };
       try {
         b = req.json();
@@ -424,8 +441,14 @@ async function charge(req: StandInRequest, ctx: StandInContext, kind: 'purchase'
   if (!tenant) return errors(401, 'Unauthorized');
   const key = req.headers['idempotency-key'];
   if (!key) return errors(400, 'An idempotency-key header is required');
-  const seen = idempotent.get(`${tenant}:${key}`);
-  if (seen) return json(200, view(seen));
+  const now = ctx.now().getTime();
+  sweep(now);
+  const slot = `${kind} ${tenant} ${key}`;
+  const body = createHash('sha256').update(req.body).digest('hex');
+  const seen = idempotent.get(slot);
+  if (seen && seen.body === body) return json(200, view(seen.txn));
+  // Helcim documents no answer for this; the stand-in refuses it, as a key's meaning is its first request.
+  if (seen) return errors(409, 'The idempotency-key was already used with a different request');
   let b: Record<string, unknown>;
   try {
     b = req.json();
@@ -479,7 +502,7 @@ async function charge(req: StandInRequest, ctx: StandInContext, kind: 'purchase'
       original: original.transactionId,
     });
   }
-  idempotent.set(`${tenant}:${key}`, t);
+  idempotent.set(slot, { txn: t, body, at: now });
   // Charged, but the answer lost: the client times out, and must find it by listing the day's transactions.
   if (ctx.take('timeout', { operation: kind === 'purchase' ? 'payment.purchase' : 'payment.refund', tenant }))
     return new Promise<Reply>(() => undefined);

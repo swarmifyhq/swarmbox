@@ -8,15 +8,33 @@ import { builtinStandIn } from '../src/standins/builtin/index.ts';
 import { startStandIn, type StandIn } from '../src/standins/runner.ts';
 
 const SANDBOX = process.env.SWARMBOX_NO_SANDBOX === '1' ? 'off' : 'required';
+/** PHP's json_encode with its default flags, as Helcim's documentation hashes with: "/" and non-ASCII escaped. */
+const jsonEncode = (data: unknown) =>
+  JSON.stringify(data)
+    .replaceAll('/', '\\/')
+    .replace(/[\u0080-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const hash = (data: unknown, secret: string) =>
   createHash('sha256')
-    .update(
-      JSON.stringify(data).replace(
-        /[\u007f-￿]/g,
-        (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
-      ) + secret,
-    )
+    .update(jsonEncode(data) + secret)
     .digest('hex');
+
+const mountain = (iso: string) => {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Edmonton',
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+      .formatToParts(new Date(iso))
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+};
 
 describe('the Helcim stand-in', () => {
   let helcim: StandIn;
@@ -81,7 +99,7 @@ describe('the Helcim stand-in', () => {
         number: '4111 1111 1111 1111',
         expiry: '12/31',
         cvv: '123',
-        name: 'Jamie Chen',
+        name: 'Jamie Chén / Acme',
       })
     ).json()) as {
       status: string;
@@ -95,10 +113,13 @@ describe('the Helcim stand-in', () => {
       hash: string;
     };
     expect(paid.status).toBe('SUCCESS');
+    // The name carries "/" and an é, which PHP's json_encode escapes: the hash covers them as Helcim's does.
     expect(paid.hash).toBe(hash(paid.data, secretToken));
+    expect(jsonEncode(paid.data)).toContain('Jamie Ch\\u00e9n \\/ Acme');
     expect(paid.data).toMatchObject({ amount: 135.45, status: 'APPROVED', cardNumber: '4111********1111' });
-    // Helcim's own dates: Mountain Time, on the world's clock.
-    expect(paid.data.dateCreated).toBe('2030-03-02 09:00:00');
+    // Helcim's own dates: Mountain Time, on the world's clock. The offset comes from this machine's tzdata (2030's
+    // rules differ between releases), so the expected time is worked out the same way, not written down.
+    expect(paid.data.dateCreated).toBe(mountain('2030-03-02T16:00:00.000Z'));
     const back = (await (await api(`/card-transactions/${paid.data.transactionId}`)).json()) as {
       amount: number;
       status: string;
@@ -176,8 +197,25 @@ describe('the Helcim stand-in', () => {
       (await refund({ originalTransactionId: first.transactionId, amount: 150, ipAddress: '0.0.0.0' }, 'r-1'))
         .status,
     ).toBe(200);
+    // A key belongs to its operation: a refund under the purchase's key is its own refund, not the purchase back.
+    const sameKey = (await (
+      await refund({ originalTransactionId: first.transactionId, amount: 10, ipAddress: '0.0.0.0' }, 'k-1')
+    ).json()) as { type: string; amount: number };
+    expect(sameKey).toMatchObject({ type: 'refund', amount: 10 });
+    // The same key with another body is refused; five minutes on, the key is free again.
+    const changed = await api('/payment/purchase', {
+      method: 'POST',
+      body: { ...buy, amount: 201 },
+      key: 'k-1',
+    });
+    expect(changed.status).toBe(409);
+    helcim.setClock({ at: '2030-03-02T16:06:00.000Z', paused: true });
+    expect(
+      (await api('/payment/purchase', { method: 'POST', body: { ...buy, amount: 1 }, key: 'k-1' })).status,
+    ).toBe(200);
+    helcim.setClock({ at: '2030-03-02T16:00:00.000Z', paused: true });
     const over = await refund(
-      { originalTransactionId: first.transactionId, amount: 60, ipAddress: '0.0.0.0' },
+      { originalTransactionId: first.transactionId, amount: 50, ipAddress: '0.0.0.0' },
       'r-2',
     );
     expect(over.status).toBe(400);
