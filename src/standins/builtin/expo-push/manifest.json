@@ -1,0 +1,45 @@
+{
+  "name": "expo-push",
+  "provider": "Expo push service",
+  "apiVersion": "v2",
+  "surfaces": ["push"],
+  "operations": [
+    { "name": "push.send", "method": "POST", "path": "/--/api/v2/push/send" },
+    { "name": "push.receipts", "method": "POST", "path": "/--/api/v2/push/getReceipts" }
+  ],
+  "connect": { "baseUrls": { "api": "/" } },
+  "accounts": { "fields": { "accessToken": "secret" } },
+  "behaviours": ["fail", "hang", "slow", "limit", "reject", "late", "gone"],
+  "answers": {
+    "fail": {
+      "status": 500,
+      "body": { "errors": [{ "code": "INTERNAL_SERVER_ERROR", "message": "An unknown error occurred." }] }
+    },
+    "limit": {
+      "status": 429,
+      "body": {
+        "errors": [
+          { "code": "TOO_MANY_REQUESTS", "message": "You are sending too many requests. Slow down." }
+        ]
+      }
+    }
+  },
+  "inbound": [
+    {
+      "kind": "register",
+      "label": "A device installs the app: its push token, for one tenant's project",
+      "fields": { "tenant": "The tenant", "device": "A name for the device, e.g. Ana's iPad" }
+    },
+    {
+      "kind": "unregister",
+      "label": "A device removes the app or is wiped: its token stops reaching it",
+      "fields": { "token": "The push token, or the device's name" }
+    },
+    {
+      "kind": "received",
+      "label": "What has reached one device, newest last",
+      "fields": { "token": "The push token, or the device's name" }
+    }
+  ],
+  "clock": "world"
+}
