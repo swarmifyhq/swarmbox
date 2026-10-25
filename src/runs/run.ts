@@ -147,6 +147,7 @@ export function createRuns<W extends ProductWorld>(
         seed: scenario.world.seed,
         ...(scenario.world.keep ? { keep: scenario.world.keep } : {}),
         ...(checked ? { options: checked.data as Record<string, unknown> } : {}),
+        ...(scenario.world.standins ? { standins: scenario.world.standins } : {}),
       });
       try {
         const people = await h.people(w.id);

@@ -37,7 +37,8 @@ import {
   type Stroke,
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
-import type { Persona, Product, ProductWorld, WorldSpec } from './product.ts';
+import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import { startStandIn, type StandIn } from './standins/runner.ts';
 
 export type Controller = 'agent' | 'person';
 
@@ -51,6 +52,8 @@ export interface WorldEntry<W extends ProductWorld = ProductWorld> {
   clock: { at: string; paused: boolean } | null;
   /** Where each tenant's feed has been read to, so an action reports what happened after it, only. */
   feedAt: Map<string, string>;
+  /** The world's stand-ins, by name. */
+  standins: Map<string, StandIn>;
 }
 
 export interface ScreenEntry {
@@ -103,11 +106,23 @@ export type NetworkMode =
 
 const SIGNALS_KEPT = 500;
 
+/** What the product is told about each stand-in: its addresses, and a way to make each tenant's account. */
+function endpointsOf(standins: Map<string, StandIn>): Record<string, StandInEndpoint> {
+  return Object.fromEntries(
+    [...standins].map(([name, s]) => [
+      name,
+      { baseUrls: s.baseUrls, account: (tenant: string) => s.account(tenant) },
+    ]),
+  );
+}
+
 export interface HarnessOptions {
   /** Headed by default: the screens are meant to be watched and taken over. */
   headless?: boolean;
   /** Slows every browser action, so a person can follow along. */
   slowMo?: number;
+  /** Stand-ins run in the operating-system sandbox; "off" only for Swarmbox's own tests where there is none. */
+  standinSandbox?: 'required' | 'off';
 }
 
 /** A refusal the caller can show as-is: wrong arguments, a screen someone else has, and so on. */
@@ -136,6 +151,18 @@ async function refusal(r: PwResponse, origin: string): Promise<string> {
     // Not JSON: the status says enough.
   }
   return `${r.request().method()} ${r.url().slice(origin.length) || '/'} → ${r.status()}${why ? ` ${why.slice(0, 200)}` : ''}`;
+}
+
+/** A port the system has free right now: for a world whose port must be known before it starts. */
+function ephemeralPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
 async function portFree(port: number): Promise<boolean> {
@@ -390,7 +417,20 @@ export function createHarness<W extends ProductWorld>(
   }
 
   async function startEntry(id: string, spec: WorldSpec, port?: number): Promise<WorldEntry<W>> {
-    const world = await product.startWorld(spec, port ?? (await freePort()));
+    let at = port ?? (await freePort());
+    // Stand-ins deliver to the world's port, so it has to be known before the product starts.
+    if (at === 0 && wantsStandIns(spec)) at = await ephemeralPort();
+    const standins = await startStandIns(spec, at);
+    let world: W;
+    try {
+      world = await product.startWorld(
+        { ...spec, ...(standins.size ? { endpoints: endpointsOf(standins) } : {}) },
+        at,
+      );
+    } catch (e) {
+      await stopStandIns(standins);
+      throw e;
+    }
     try {
       const fleet = await launchFleet({
         baseDomain: world.baseDomain,
@@ -398,11 +438,59 @@ export function createHarness<W extends ProductWorld>(
         headless: options.headless ?? false,
         ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
       });
-      return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map() };
+      return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map(), standins };
     } catch (e) {
-      await world.stop();
+      try {
+        await world.stop();
+      } finally {
+        await stopStandIns(standins);
+      }
       throw e;
     }
+  }
+
+  function wantsStandIns(spec: WorldSpec): boolean {
+    return Boolean(spec.standins?.length || product.standins?.some((s) => s.always !== false));
+  }
+
+  /** The stand-ins a world asks for, each started before the product, pointed at the world's port. */
+  async function startStandIns(spec: WorldSpec, port: number): Promise<Map<string, StandIn>> {
+    const known = product.standins ?? [];
+    const names = [
+      ...new Set([...known.filter((s) => s.always !== false).map((s) => s.name), ...(spec.standins ?? [])]),
+    ];
+    const started = new Map<string, StandIn>();
+    if (!names.length) return started;
+    if (!product.baseDomain)
+      throw new HarnessError(`${product.name} uses stand-ins, so it needs a fixed baseDomain`);
+    try {
+      for (const name of names) {
+        const source = known.find((s) => s.name === name);
+        if (!source)
+          throw new HarnessError(
+            `${product.name} has no stand-in ${name}; it has ${known.map((s) => s.name).join(', ') || 'none'}`,
+          );
+        started.set(
+          name,
+          await startStandIn({
+            dir: source.dir,
+            deliverTo: `http://127.0.0.1:${port}`,
+            baseDomain: product.baseDomain,
+            sandbox: options.standinSandbox ?? 'required',
+            // Its own words go to the operator's console only, labelled, never to the agent.
+            onStderr: (t) => process.stderr.write(t.replace(/^/gm, `[stand-in ${name}] `)),
+          }),
+        );
+      }
+    } catch (e) {
+      await stopStandIns(started);
+      throw e;
+    }
+    return started;
+  }
+
+  async function stopStandIns(standins: Map<string, StandIn>): Promise<void> {
+    await Promise.all([...standins.values()].map((s) => s.stop().catch(() => undefined)));
   }
 
   async function closeEntry(s: ScreenEntry): Promise<void> {
@@ -413,9 +501,14 @@ export function createHarness<W extends ProductWorld>(
   }
 
   async function stopEntry(w: WorldEntry<W>): Promise<void> {
-    for (const s of [...screens.values()].filter((s) => s.worldId === w.id)) await closeEntry(s);
-    await w.fleet.close();
-    await w.world.stop();
+    try {
+      for (const s of [...screens.values()].filter((s) => s.worldId === w.id)) await closeEntry(s);
+      await w.fleet.close();
+      await w.world.stop();
+    } finally {
+      // Whatever failed before, its stand-ins stop and their folders go: they're processes of their own.
+      await stopStandIns(w.standins);
+    }
   }
 
   /**
@@ -643,6 +736,7 @@ export function createHarness<W extends ProductWorld>(
         seed: partial.seed ?? false,
         ...(partial.keep ? { keep: partial.keep } : {}),
         ...(partial.options ? { options: partial.options } : {}),
+        ...(partial.standins?.length ? { standins: partial.standins } : {}),
       };
       const id = `w${nextWorld++}`;
       const run = creating.then(async () => {
@@ -920,6 +1014,8 @@ export function createHarness<W extends ProductWorld>(
       const state = move ? await hooks.moveClock(move) : await hooks.clock();
       if (move) {
         w.clock = { at: state.process.at, paused: state.clock.frozenAt !== null };
+        // Stand-ins that sign with the world's time sign with the new one.
+        for (const standin of w.standins.values()) standin.setClock(w.clock);
         for (const s of [...screens.values()].filter((x) => x.worldId === worldId)) {
           await followClock(s, w.clock);
           // Signed in again on the new time, as a person who kept using the app would still be. A customer's
@@ -938,7 +1034,10 @@ export function createHarness<W extends ProductWorld>(
     async shutdown() {
       for (const w of [...worlds.values()]) {
         worlds.delete(w.id);
-        await stopEntry(w).catch(() => undefined);
+        // Every world is stopped whatever one does; a failure is said, not swallowed.
+        await stopEntry(w).catch((e: unknown) =>
+          process.stderr.write(`swarmbox: stopping world ${w.id} failed: ${(e as Error).message}\n`),
+        );
       }
       await product.shutdown?.();
     },

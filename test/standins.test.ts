@@ -167,6 +167,39 @@ describe('a stand-in a product talks to as its provider', () => {
     expect(s.log().some((e) => e.behaviour === 'hang')).toBe(true);
   });
 
+  it('caps what a behaviour carries, and how many stay applied', async () => {
+    await expect(s.behave({ behaviour: 'slow', param: { note: 'x'.repeat(201) } })).rejects.toThrow(
+      /200 characters/,
+    );
+    await expect(s.behave({ behaviour: 'slow', param: { 'bad key': 1 } })).rejects.toThrow(
+      /plain identifier/,
+    );
+    await s.clearRules();
+    for (let i = 0; i < 100; i++) await s.behave({ behaviour: 'reject', match: { target: `+1250555${i}` } });
+    await expect(s.behave({ behaviour: 'fail' })).rejects.toThrow(/100 behaviours applied already/);
+    await s.clearRules();
+    await s.behave({ behaviour: 'fail', count: 1 });
+    await s.clearRules();
+  });
+
+  it('holds the cap when several ask at once, and frees a slot when a counted behaviour runs out', async () => {
+    await s.clearRules();
+    for (let i = 0; i < 99; i++) await s.behave({ behaviour: 'reject', match: { target: `+1250555${i}` } });
+    const at = await Promise.allSettled(
+      Array.from({ length: 5 }, (_, i) => s.behave({ behaviour: 'reject', match: { target: `+1999${i}` } })),
+    );
+    expect(at.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    await expect(s.behave({ behaviour: 'reject' })).rejects.toThrow(/100 behaviours/);
+    // One of them was counted once: used up by a text to its number, its slot is free again.
+    await s.clearRules();
+    for (let i = 0; i < 99; i++) await s.behave({ behaviour: 'reject', match: { target: `+1250555${i}` } });
+    await s.behave({ behaviour: 'reject', count: 1, match: { target: '+12505550177' } });
+    await expect(s.behave({ behaviour: 'reject' })).rejects.toThrow(/100 behaviours/);
+    expect((await sendText('+12505550177')).status).toBe(400);
+    await s.behave({ behaviour: 'reject', match: { target: '+12505550178' } });
+    await s.clearRules();
+  });
+
   it('applies its own behaviours, and refuses ones it doesn’t support', async () => {
     await s.behave({ behaviour: 'reject', count: 1, match: { target: '+12505550199' } });
     const refused = await sendText('+12505550199');
