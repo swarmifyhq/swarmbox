@@ -14,7 +14,7 @@
 // A factory rather than a class: products run TypeScript through Node's strip-only loader, which does not
 // support parameter properties.
 
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type Page, type Route } from 'playwright-core';
 import type { Persona, SignIn, StartCookie } from '../product.ts';
 
 /** A sign-in's cookies, on the tenant's own origin: how a screen is signed in, and kept signed in. */
@@ -65,6 +65,83 @@ export interface FleetOptions {
 const ROUTED_CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-src 'self'; base-uri 'none'";
+
+/** Hops Swarmbox follows itself between a stand-in's own pages before calling it a loop. */
+const ROUTED_HOPS = 5;
+
+/**
+ * A request to a provider origin a stand-in plays, answered by that stand-in (FleetOptions.routes). Its redirects
+ * are never left to the browser where the browser would leave the world, because Playwright routes only the first
+ * URL of a navigation, not the hops after it:
+ * - out of the world: refused here, with a 502;
+ * - to a routed origin (the browser would go to the real provider): a navigation is sent on afresh, so it is
+ *   routed; anything else (a fetch, an image) is followed here, each hop checked;
+ * - to the world's own hosts, a stand-in or what the product loads from outside: the browser follows it.
+ */
+async function answerRouted(route: Route, options: FleetOptions): Promise<void> {
+  const req = route.request();
+  const routes = options.routes ?? [];
+  const headers = Object.fromEntries(
+    Object.entries(await req.allHeaders()).filter(([k]) => !/^(host|cookie|:)/i.test(k)),
+  );
+  let url = new URL(req.url());
+  let method = req.method();
+  let body: Uint8Array<ArrayBuffer> | undefined =
+    method === 'GET' || method === 'HEAD'
+      ? undefined
+      : new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0));
+  const refuse = (what: string) =>
+    route.fulfill({
+      status: 502,
+      headers: { 'content-type': 'text/plain', 'content-security-policy': ROUTED_CSP },
+      body: `Swarmbox refused ${what}.`,
+    });
+  for (let hop = 0; ; hop++) {
+    const to = routes.find((x) => x.origin === url.origin)!.to;
+    const res = await fetch(`${to}${url.pathname}${url.search}`, {
+      method,
+      headers,
+      ...(body ? { body } : {}),
+      redirect: 'manual',
+    });
+    const location = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && location !== null) {
+      let next: URL | null = null;
+      try {
+        next = new URL(location, url);
+      } catch {
+        // not a URL: refused below
+      }
+      if (!next || !insideWorld(next.href, options)) return refuse('a redirect out of the world');
+      if (routes.some((x) => x.origin === next.origin)) {
+        if (req.isNavigationRequest())
+          return route.fulfill({
+            status: 200,
+            headers: { 'content-type': 'text/html', 'content-security-policy': ROUTED_CSP },
+            body: `<!doctype html><script>location.replace(${JSON.stringify(next.href).replace(/</g, '\\u003c')})</script>`,
+          });
+        if (hop >= ROUTED_HOPS) return refuse('a redirect loop');
+        if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
+          method = 'GET';
+          body = undefined;
+        }
+        url = next;
+        continue;
+      }
+    }
+    const out = Object.fromEntries(
+      [...res.headers].filter(
+        // fetch has already decoded the body, and the stand-in's own CSP is replaced by ours.
+        ([k]) => !/^(content-encoding|content-length|transfer-encoding|content-security-policy)$/i.test(k),
+      ),
+    );
+    return route.fulfill({
+      status: res.status,
+      headers: { ...out, 'content-security-policy': ROUTED_CSP },
+      body: Buffer.from(await res.arrayBuffer()),
+    });
+  }
+}
 
 /** Whether a URL is inside a world whose browsers play a provider's pages (see FleetOptions.allowOrigins). */
 export function insideWorld(url: string, options: FleetOptions): boolean {
@@ -218,6 +295,8 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         // The server runs in UTC; a person's browser runs where they are. "Today", "Yesterday" and the
         // year on a byline are decided here, so this machine's zone must not leak in.
         timezoneId: who.persona.timeZone,
+        // A contained world has no service workers: one on a routed origin would answer outside the routes.
+        ...(options.routes?.length ? { serviceWorkers: 'block' as const } : {}),
         ...shape,
         ...(colorScheme ? { colorScheme } : {}),
       });
@@ -260,37 +339,8 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         // Matched by exact origin, never by a pattern a manifest could widen.
         await context.route(
           (url) => url.origin === r.origin,
-          async (route) => {
-            const req = route.request();
-            const u = new URL(req.url());
-            try {
-              const res = await fetch(`${r.to}${u.pathname}${u.search}`, {
-                method: req.method(),
-                headers: Object.fromEntries(
-                  Object.entries(await req.allHeaders()).filter(([k]) => !/^(host|cookie|:)/i.test(k)),
-                ),
-                ...(req.method() === 'GET' || req.method() === 'HEAD'
-                  ? {}
-                  : { body: new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0)) }),
-                // Its redirect goes back to the browser, which is contained; Swarmbox never follows one itself.
-                redirect: 'manual',
-              });
-              const headers = Object.fromEntries(
-                [...res.headers].filter(
-                  // fetch has already decoded the body, and the stand-in's own CSP is replaced by ours.
-                  ([k]) =>
-                    !/^(content-encoding|content-length|transfer-encoding|content-security-policy)$/i.test(k),
-                ),
-              );
-              await route.fulfill({
-                status: res.status,
-                headers: { ...headers, 'content-security-policy': ROUTED_CSP },
-                body: Buffer.from(await res.arrayBuffer()),
-              });
-            } catch {
-              await route.abort('connectionrefused').catch(() => undefined);
-            }
-          },
+          (route) =>
+            answerRouted(route, options).catch(() => route.abort('connectionrefused').catch(() => undefined)),
         );
       let page: Page;
       try {

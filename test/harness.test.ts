@@ -234,6 +234,47 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await call('world_destroy', { world: w });
   });
 
+  it('answers a provider page’s redirect out of the world itself, and lets one inside it through', async () => {
+    const outside = http.createServer((_q, res) => res.end('reached'));
+    await new Promise<void>((done) => outside.listen(0, '127.0.0.1', done));
+    let hits = 0;
+    outside.on('request', () => hits++);
+    const there = `http://127.0.0.1:${(outside.address() as AddressInfo).port}/`;
+    const made = await call('world_create', { tenants: ['south'], standins: ['redirector'] });
+    const w = /^(w\d+)/.exec(made.text)![1]!;
+    try {
+      const opened = await call('screen_open', { world: w, person: 'south-ana', path: '/' });
+      const page = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!).screen.page;
+      const go = (to: string) => page.goto(`https://pay.example.org/go?to=${encodeURIComponent(to)}`);
+      for (const to of [there, 'https://example.com/', 'http://127.0.0.1:8791/', '//example.com/x']) {
+        const r = await go(to);
+        expect(r?.status(), to).toBe(502);
+        expect(await page.locator('body').textContent()).toContain('refused a redirect out of the world');
+      }
+      expect(hits).toBe(0);
+      // A hop to the provider's own origin stays with the stand-in (the browser alone would go to the real one):
+      // a page is sent on afresh, so its address is the hop's; a fetch is followed by Swarmbox.
+      await go('/landed');
+      await expect.poll(() => page.url()).toBe('https://pay.example.org/landed');
+      expect(await page.locator('#landed').textContent()).toBe('landed');
+      const fetched = (to: string) =>
+        page.evaluate(
+          (u) =>
+            fetch(u).then(
+              (r) => `${r.status} ${r.url}`,
+              () => 'blocked',
+            ),
+          `https://pay.example.org/go?to=${encodeURIComponent(to)}`,
+        );
+      expect(await fetched('/landed')).toBe('200 https://pay.example.org/go?to=%2Flanded');
+      expect(await fetched(there)).toBe('502 https://pay.example.org/go?to=' + encodeURIComponent(there));
+      expect(hits).toBe(0);
+    } finally {
+      outside.close();
+      await call('world_destroy', { world: w });
+    }
+  });
+
   it('refuses a stand-in that asks to play an origin nobody approved', async () => {
     const before = h.worlds().length;
     const made = await call('world_create', { tenants: ['south'], standins: ['lurker'] });

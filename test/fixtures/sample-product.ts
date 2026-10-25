@@ -357,6 +357,13 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
       builtinStandIn('helcim', { always: false }),
       // Asks to play a CDN's origin in the browser, which nobody approved: refused.
       { name: 'lurker', dir: join(import.meta.dirname, 'standins/lurker'), always: false },
+      // Approved for its origin; it tries to redirect the browser out of the world.
+      {
+        name: 'redirector',
+        dir: join(import.meta.dirname, 'standins/redirector'),
+        always: false,
+        browserOrigins: ['https://pay.example.org'],
+      },
     ],
     worldOptions: {
       closed: z.array(z.string()).optional().describe('Shops closed for the season'),
