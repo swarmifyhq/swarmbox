@@ -1,7 +1,7 @@
 // Serve a product through Swarmbox: the MCP server an agent drives it through, and the control room a person
 // watches. A product's own start script is a few lines:
 //
-//   import { serve } from '@swarmifyhq/swarmbox';
+//   import { serve } from 'swarmbox';
 //   import { myProduct } from './product.ts';
 //   await serve(myProduct());
 //
