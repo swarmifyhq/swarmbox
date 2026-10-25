@@ -14,7 +14,7 @@
 // A factory rather than a class: products run TypeScript through Node's strip-only loader, which does not
 // support parameter properties.
 
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type Page, type Route } from 'playwright-core';
 import type { Persona, SignIn, StartCookie } from '../product.ts';
 
 /** A sign-in's cookies, on the tenant's own origin: how a screen is signed in, and kept signed in. */
@@ -48,6 +48,139 @@ export interface FleetOptions {
   headless?: boolean;
   /** Slow actions down so a person can follow along. Milliseconds between operations. */
   slowMo?: number;
+  /**
+   * Provider pages a stand-in plays in the browser (a card form's script and iframe): every request to `origin`
+   * is answered by the stand-in at `to`, so the page keeps the provider's origin and its origin checks pass.
+   */
+  routes?: { origin: string; to: string }[];
+  /**
+   * With routes, where else the browsers may go: the world's stand-ins and what the product loads from outside.
+   * A routed provider page is the stand-in's own code in the browser, so the world's browsers then reach only the
+   * world's hosts, the routed origins and these; every other request and WebSocket is blocked.
+   */
+  allowOrigins?: string[];
+  /**
+   * The world's stand-ins' own addresses (http://127.0.0.1:<port>): reachable from its browsers (a presigned
+   * upload goes straight to S3's), but when its browsers play a provider's pages, only through the same checked
+   * proxy as the routed origins, so a stand-in can't bounce the browser out with a redirect of its own.
+   */
+  standins?: string[];
+}
+
+/** What a page a stand-in plays may load and talk to: its own origin, nothing else. */
+const ROUTED_CSP =
+  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-src 'self'; base-uri 'none'";
+
+/** Hops Swarmbox follows itself between a stand-in's own pages before calling it a loop. */
+const ROUTED_HOPS = 5;
+
+/**
+ * A request to a provider origin a stand-in plays, answered by that stand-in (FleetOptions.routes). Its redirects
+ * are never left to the browser where the browser would leave the world, because Playwright routes only the first
+ * URL of a navigation, not the hops after it:
+ * - out of the world: refused here, with a 502;
+ * - to a routed origin (the browser would go to the real provider) or a stand-in's own address (the browser would
+ *   skip this proxy): a navigation is sent on afresh, so it is routed; anything else (a fetch, an image) is
+ *   followed here, each hop checked;
+ * - to the world's own hosts or what the product loads from outside: the browser follows it. The product is
+ *   trusted: an open redirect of its own is a way out a stand-in could use, so a product shouldn't have one.
+ */
+async function answerRouted(route: Route, options: FleetOptions): Promise<void> {
+  const req = route.request();
+  const routes = options.routes ?? [];
+  const headers = Object.fromEntries(
+    Object.entries(await req.allHeaders()).filter(([k]) => !/^(host|cookie|:)/i.test(k)),
+  );
+  let url = new URL(req.url());
+  let method = req.method();
+  let body: Uint8Array<ArrayBuffer> | undefined =
+    method === 'GET' || method === 'HEAD'
+      ? undefined
+      : new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0));
+  const refuse = (what: string) =>
+    route.fulfill({
+      status: 502,
+      headers: { 'content-type': 'text/plain', 'content-security-policy': ROUTED_CSP },
+      body: `Swarmbox refused ${what}.`,
+    });
+  for (let hop = 0; ; hop++) {
+    // A routed origin is answered by its stand-in; a stand-in's own address, by itself.
+    const to = routes.find((x) => x.origin === url.origin)?.to ?? url.origin;
+    if (to === url.origin && !(options.standins ?? []).includes(url.origin))
+      return refuse('a request outside the world');
+    const res = await fetch(`${to}${url.pathname}${url.search}`, {
+      method,
+      headers,
+      ...(body ? { body } : {}),
+      redirect: 'manual',
+    });
+    const location = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && location !== null) {
+      let next: URL | null = null;
+      try {
+        next = new URL(location, url);
+      } catch {
+        // not a URL: refused below
+      }
+      if (!next || !insideWorld(next.href, options)) return refuse('a redirect out of the world');
+      if (routes.some((x) => x.origin === next.origin) || (options.standins ?? []).includes(next.origin)) {
+        if (req.isNavigationRequest())
+          return route.fulfill({
+            status: 200,
+            headers: { 'content-type': 'text/html', 'content-security-policy': ROUTED_CSP },
+            body: `<!doctype html><script>location.replace(${JSON.stringify(next.href).replace(/</g, '\\u003c')})</script>`,
+          });
+        if (hop >= ROUTED_HOPS) return refuse('a redirect loop');
+        if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
+          method = 'GET';
+          body = undefined;
+        }
+        url = next;
+        continue;
+      }
+    }
+    const out = Object.fromEntries(
+      [...res.headers].filter(
+        // fetch has already decoded the body, and the stand-in's own CSP is replaced by ours.
+        ([k]) => !/^(content-encoding|content-length|transfer-encoding|content-security-policy)$/i.test(k),
+      ),
+    );
+    return route.fulfill({
+      status: res.status,
+      headers: { ...out, 'content-security-policy': ROUTED_CSP },
+      body: Buffer.from(await res.arrayBuffer()),
+    });
+  }
+}
+
+/** Whether a URL is inside a world whose browsers play a provider's pages (see FleetOptions.allowOrigins). */
+export function insideWorld(url: string, options: FleetOptions): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'about:') return true;
+  const plain = u.protocol === 'ws:' ? 'http:' : u.protocol === 'wss:' ? 'https:' : u.protocol;
+  const origin = `${plain}//${u.host}`;
+  const world =
+    plain === 'http:' &&
+    Number(u.port || 80) === options.port &&
+    (u.hostname === options.baseDomain || u.hostname.endsWith(`.${options.baseDomain}`));
+  return (
+    world ||
+    (options.routes ?? []).some((r) => r.origin === origin) ||
+    (options.standins ?? []).includes(origin) ||
+    (options.allowOrigins ?? []).some((o) => {
+      try {
+        return new URL(o).origin === origin;
+      } catch {
+        return false;
+      }
+    })
+  );
 }
 
 /**
@@ -174,6 +307,8 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         // The server runs in UTC; a person's browser runs where they are. "Today", "Yesterday" and the
         // year on a byline are decided here, so this machine's zone must not leak in.
         timezoneId: who.persona.timeZone,
+        // A contained world has no service workers: one on a routed origin would answer outside the routes.
+        ...(options.routes?.length ? { serviceWorkers: 'block' as const } : {}),
         ...shape,
         ...(colorScheme ? { colorScheme } : {}),
       });
@@ -201,6 +336,29 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
+      if (options.routes?.length) {
+        // Contained: nothing leaves the world but to its stand-ins and what the product loads from outside.
+        await context.route(
+          (url) => !insideWorld(url.href, options),
+          (route) => route.abort('blockedbyclient'),
+        );
+        await context.routeWebSocket(
+          (url) => !insideWorld(url.href, options),
+          (ws) => ws.close({ code: 1008, reason: 'outside the world' }),
+        );
+      }
+      // Matched by exact origin, never by a pattern a manifest could widen. A contained world's stand-ins are
+      // reached through the same proxy, so every redirect any of them answers is checked.
+      const proxied = [
+        ...(options.routes ?? []).map((r) => r.origin),
+        ...(options.routes?.length ? (options.standins ?? []) : []),
+      ];
+      for (const o of proxied)
+        await context.route(
+          (url) => url.origin === o,
+          (route) =>
+            answerRouted(route, options).catch(() => route.abort('connectionrefused').catch(() => undefined)),
+        );
       let page: Page;
       try {
         // The screen's own set-up (its device): inside, so a failure there closes the half-made context too.

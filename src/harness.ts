@@ -39,6 +39,7 @@ import {
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import { isThisMachine } from './standins/guard.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
 import {
   setLocation,
@@ -461,6 +462,11 @@ export function createHarness<W extends ProductWorld>(
         port: world.port,
         headless: options.headless ?? false,
         ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
+        routes: browserRoutes(standins),
+        // Where a world's browsers may still go when they play a provider's pages: its stand-ins, and what the
+        // product loads from outside.
+        standins: [...standins.values()].map((s) => s.origin),
+        allowOrigins: product.browserAllow ?? [],
       });
       return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map(), standins };
     } catch (e) {
@@ -471,6 +477,32 @@ export function createHarness<W extends ProductWorld>(
       }
       throw e;
     }
+  }
+
+  /**
+   * The provider pages each stand-in plays in the world's browsers: the exact origins its manifest asks for, each
+   * approved for it in Product.standins (built-ins come approved). Never an origin that would pass for the
+   * product's own (its base domain, a tenant's host, this machine) or one the product loads from itself.
+   */
+  function browserRoutes(standins: Map<string, StandIn>): { origin: string; to: string }[] {
+    const routes: { origin: string; to: string }[] = [];
+    for (const [name, s] of standins) {
+      const approved = product.standins?.find((x) => x.name === name)?.browserOrigins ?? [];
+      for (const o of s.manifest.connect.browser?.origins ?? []) {
+        const host = new URL(o).hostname;
+        const ours =
+          product.baseDomain && (host === product.baseDomain || host.endsWith(`.${product.baseDomain}`));
+        if (ours || isThisMachine(host) || !o.startsWith('https://') || product.browserAllow?.includes(o))
+          throw new HarnessError(`the ${s.manifest.name} stand-in may not play ${o} in the browser`);
+        if (!approved.includes(o))
+          throw new HarnessError(
+            `the ${s.manifest.name} stand-in asks to play ${o} in the browser, and ${product.name} hasn't ` +
+              `approved it: add it to that stand-in's browserOrigins in Product.standins`,
+          );
+        routes.push({ origin: o, to: s.origin });
+      }
+    }
+    return routes;
   }
 
   function wantsStandIns(spec: WorldSpec): boolean {

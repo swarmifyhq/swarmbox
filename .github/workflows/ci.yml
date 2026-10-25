@@ -56,7 +56,7 @@ jobs:
         run: pnpm exec vitest run test/unit --maxWorkers=2
       - name: Browser tests
         # Stand-ins run sandboxed here too, hostile ones included.
-        run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts test/standins.test.ts test/twilio.test.ts test/email.test.ts test/s3.test.ts test/s3-sdk.test.ts --maxWorkers=1
+        run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts test/standins.test.ts test/twilio.test.ts test/email.test.ts test/s3.test.ts test/s3-sdk.test.ts test/helcim.test.ts --maxWorkers=1
 
   publish:
     needs: check

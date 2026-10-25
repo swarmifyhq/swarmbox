@@ -72,7 +72,7 @@ interface StandInManifest {
     hosts?: string[]; // hosts it answers for through the proxy, for SDKs with fixed hosts (step 3)
     browser?: {
       // pages the world's browsers get from the stand-in instead of the provider
-      origins: string[]; // e.g. ["https://secure.helcim.app"]: routed whole, so origin checks still pass
+      origins: string[]; // exact https origins, e.g. ["https://secure.helcim.app"]: routed whole, so origin checks pass
     };
   };
   accounts: { fields: Record<string, 'id' | 'secret' | 'phone' | 'email' | 'text'> };
@@ -227,6 +227,23 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
   - The product's answer comes back to the stand-in (Twilio runs it as TwiML). So a stand-in can read what a
     tenant's host serves without signing in, as anyone on the internet could. It's still sandboxed, and what it
     makes of it reaches the agent only framed as its own.
+- **It plays a provider's pages in the browser only where it was let.**
+  - A manifest's `connect.browser.origins` are exact https origins (no `*`, braces, `?`, brackets, path or
+    uppercase), matched as origins, never as patterns.
+  - Each needs approving for that stand-in in `Product.standins[].browserOrigins` by whoever runs the product.
+    Built-in stand-ins come with theirs approved. Never approve an origin the product loads its own code from: the
+    stand-in's script would run in its signed-in pages. A world asking for an unapproved one is refused.
+  - Never the product's own hosts, this machine, or an origin in `Product.browserAllow`.
+  - A world whose browsers play a provider's pages is contained: they reach only the world's hosts, the routed
+    origins, the world's stand-ins and `Product.browserAllow` (what the product loads from outside: fonts, maps).
+    Every other request and WebSocket is blocked.
+  - The routed pages carry a CSP of their own origin only, replacing any the stand-in sends.
+  - A stand-in's redirects are Swarmbox's to follow, never the browser's, since a browser's next hop skips the
+    routes: out of the world is refused (502); to a routed origin or a stand-in's own address, a page is sent on
+    afresh and anything else is followed by Swarmbox, each hop checked. The stand-ins' own addresses on this
+    machine (a presigned upload's) are reached through the same proxy.
+  - The product is trusted. An open redirect of its own is a way out a stand-in could bounce the browser through,
+    so a product run with stand-ins in the browser shouldn't have one.
 - **A fake key can never work in production.**
   - Every credential a stand-in issues carries a mark, and Swarmbox checks each account before using it:
     - ids, secrets and text carry the word `swarmbox`, or the hex mark `c0ffee5b` where only hex will do (a
@@ -257,11 +274,13 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
 | `twilio` | Twilio, API 2010-04-01            | Texts with signed status callbacks (sent, then delivered or undelivered), refusals (21610), receipts by hand; a customer's text to the number's `smsUrl`; a call to its `voiceUrl` run through the product's TwiML (Dial, Say, Record, Reject, Hangup, each verb's `action` followed, and the next verb after a dial with none), answered at once and followed with the `call-status` inbound, answered, unanswered or busy, recorded, or held ringing until the caller hangs up, with its end posted to `voiceStatusUrl`; and the reads of calls, recordings (as MP3, at the stand-in's own address) and transcriptions. Voice Intelligence answers as not enabled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `email`  | Resend                            | `POST /emails` with its validation errors and Idempotency-Key, the `email.sent` then `email.delivered`, `email.bounced` or `email.complained` events to the account's `webhookUrl`, signed with Svix on the world's time; refusals and events by hand; and a mailbox read (inbound `mailbox`) of what one address was sent, so a sign-in code can be read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `s3`     | S3-compatible storage, path style | Every request checked with Signature Version 4 on the real clock, header-signed or presigned, as S3 holds it: the credential's date, region (the account's `region`, `auto` by default) and service, links of a week at most, `x-amz-content-sha256` required (`SignatureDoesNotMatch`, `RequestTimeTooSkewed`, `Request has expired`, `InvalidAccessKeyId`, `AuthorizationHeaderMalformed`). aws-chunked uploads, as the AWS SDK sends a stream, decoded: each chunk's signature checked in turn, and the trailer's. Content-MD5 and every `x-amz-checksum` (CRC32, CRC32C, CRC64NVME, SHA-1, SHA-256), in a header or the trailer, enforced (`BadDigest`); an object sent none gets S3's own CRC64NVME. Each account's buckets are its own. Heads and gets with ranges; deletes; uploads in parts with S3's rules (5 MB but the last, `EntityTooSmall`; ascending, `InvalidPartOrder`) and composite or full-object checksums; the list of unfinished uploads; and the browser's CORS preflight, open to the world's own hosts unless the bucket's account sets `corsOrigins`. Objects up to 15 MB (`EntityTooLarge`), since each body crosses to Swarmbox as one message. `limit` answers `503 SlowDown`. |
+| `helcim` | Helcim, API v2 and HelcimPay.js   | A checkout (`/helcim-pay/initialize`, an hour on the world's clock) and its card form in the browser at Helcim's own address (`https://secure.helcim.app`: `start.js`'s `appendHelcimPayIframe`, then the iframe's `postMessage` to the page, so the page's origin check passes), its result hashed as Helcim documents it, `sha256(json_encode(data) . secretToken)` with PHP's escaping (`\/`, `\uXXXX`); test cards (4111 1111 1111 1111 approves, 4000 0000 0000 0002 declines); a card saved for a customer by a `verify` checkout, then listed, charged by token and deleted; purchases and refunds with `idempotency-key` required, kept per account and operation for five minutes (another body under the same key is refused), refunds up to what remains; reads of transactions (by day and card) and customers, with dates in Mountain Time on the world's clock. `decline` declines the next charge, `timeout` keeps its answer (the product gets a 504, the charge stands), inbound `expire` expires a saved card. Not yet: the Smart Terminal and Helcim's webhooks.                                                                                                                          |
 
 A product lists them with `builtinStandIn('twilio')` in `Product.standins`, and gives each tenant's account its console
 settings: `account(tenant, {smsUrl, voiceUrl, voiceStatusUrl})` for Twilio, `account(tenant, {webhookUrl})` for email,
-`account(tenant, {region, corsOrigins})` for S3. A
-product with one email account for everyone uses one tenant for it.
+`account(tenant, {region, corsOrigins})` for S3. A product with one email account for everyone uses one tenant for it.
+Helcim needs none: its card form is routed in the world's browsers, so a product's pay page loads `start.js` from
+Helcim's address as it would live.
 
 ## Order of work
 

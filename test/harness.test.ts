@@ -4,6 +4,8 @@
 // agent uses. Needs Chromium (pnpm exec playwright install chromium).
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -181,6 +183,125 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await click('Where am I');
     await expect.poll(shown).toBe('At 49.283,-123.121');
     await call('screen_close', { screen });
+  });
+
+  it('plays a provider’s pages in the browser at the provider’s own address: a card form that pays', async () => {
+    const made = await call('world_create', { tenants: ['south'], standins: ['helcim'] });
+    const w = /^(w\d+)/.exec(made.text)![1]!;
+    const cards = h.world(w).world.cards!;
+    const init = await fetch(`${cards.api}/helcim-pay/initialize`, {
+      method: 'POST',
+      headers: { 'api-token': cards.accounts.get('south')!.apiToken!, 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentType: 'purchase', amount: 135.45, currency: 'CAD' }),
+    });
+    const { checkoutToken } = (await init.json()) as { checkoutToken: string };
+    const opened = await call('screen_open', {
+      world: w,
+      person: 'south-ana',
+      path: `/pay?token=${checkoutToken}`,
+    });
+    const page = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!).screen.page;
+    const form = page.frameLocator('#helcimPayIframe');
+    await form.getByLabel('Card number').fill('4111 1111 1111 1111');
+    await form.getByLabel('Expiry (MM/YY)').fill('12/31');
+    await form.getByLabel('CVV').fill('123');
+    await form.getByLabel('Name on card').fill('Ana');
+    await form.getByRole('button', { name: 'Pay $135.45' }).click();
+    // The page heard Helcim's message from Helcim's own origin, so its origin check passes as it would live.
+    await expect
+      .poll(() => page.locator('#payment').textContent())
+      .toBe('https://secure.helcim.app SUCCESS 135.45');
+
+    // The stand-in's code now runs in the browser, so the browser stays in the world: a server on this machine
+    // that Node reaches is out of reach from the page and from the provider's frame, as is the internet.
+    const outside = http.createServer((_q, res) => res.end('reached'));
+    await new Promise<void>((done) => outside.listen(0, '127.0.0.1', done));
+    const there = `http://127.0.0.1:${(outside.address() as AddressInfo).port}/`;
+    try {
+      expect(await (await fetch(there)).text()).toBe('reached');
+      const tryFetch = (url: string) =>
+        fetch(url, { mode: 'no-cors' }).then(
+          () => 'reached',
+          () => 'blocked',
+        );
+      expect(await page.evaluate(tryFetch, there)).toBe('blocked');
+      const frame = page.frames().find((f) => f.url().startsWith('https://secure.helcim.app/'))!;
+      expect(await frame.evaluate(tryFetch, there)).toBe('blocked');
+      expect(await frame.evaluate(tryFetch, 'https://example.com/')).toBe('blocked');
+    } finally {
+      outside.close();
+    }
+    await call('world_destroy', { world: w });
+  });
+
+  it('answers a provider page’s redirect out of the world itself, and lets one inside it through', async () => {
+    const outside = http.createServer((_q, res) => res.end('reached'));
+    await new Promise<void>((done) => outside.listen(0, '127.0.0.1', done));
+    let hits = 0;
+    outside.on('request', () => hits++);
+    const there = `http://127.0.0.1:${(outside.address() as AddressInfo).port}/`;
+    const made = await call('world_create', { tenants: ['south'], standins: ['redirector'] });
+    const w = /^(w\d+)/.exec(made.text)![1]!;
+    try {
+      const opened = await call('screen_open', { world: w, person: 'south-ana', path: '/' });
+      const page = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!).screen.page;
+      const go = (to: string) => page.goto(`https://pay.example.org/go?to=${encodeURIComponent(to)}`);
+      for (const to of [there, 'https://example.com/', 'http://127.0.0.1:8791/', '//example.com/x']) {
+        const r = await go(to);
+        expect(r?.status(), to).toBe(502);
+        expect(await page.locator('body').textContent()).toContain('refused a redirect out of the world');
+      }
+      expect(hits).toBe(0);
+      // A hop to the provider's own origin stays with the stand-in (the browser alone would go to the real one):
+      // a page is sent on afresh, so its address is the hop's; a fetch is followed by Swarmbox.
+      await go('/landed');
+      await expect.poll(() => page.url()).toBe('https://pay.example.org/landed');
+      expect(await page.locator('#landed').textContent()).toBe('landed');
+      const fetched = (to: string) =>
+        page.evaluate(
+          (u) =>
+            fetch(u).then(
+              (r) => `${r.status} ${r.url}`,
+              () => 'blocked',
+            ),
+          `https://pay.example.org/go?to=${encodeURIComponent(to)}`,
+        );
+      expect(await fetched('/landed')).toBe('200 https://pay.example.org/go?to=%2Flanded');
+      expect(await fetched(there)).toBe('502 https://pay.example.org/go?to=' + encodeURIComponent(there));
+
+      // Its own address on this machine is reachable, but only through the same checked proxy: a bounce through
+      // it, by a page or a fetch, is refused at the hop that leaves; an upload with its preflight goes through.
+      const own = h.world(w).standins.get('redirector')!.origin;
+      const bounce = `${own}/go?to=${encodeURIComponent(there)}`;
+      expect(await fetched(bounce)).toMatch(/^502 /);
+      await go(bounce);
+      await expect
+        .poll(() => page.locator('body').textContent())
+        .toContain('refused a redirect out of the world');
+      expect((await page.goto(bounce))?.status()).toBe(502);
+      await page.goto('/');
+      const put = await page.evaluate(
+        (u) =>
+          fetch(u, { method: 'PUT', headers: { 'x-upload': '1' }, body: 'four' }).then(
+            async (r) => `${r.status} ${await r.text()}`,
+            () => 'blocked',
+          ),
+        `${own}/cors`,
+      );
+      expect(put).toBe('200 stored 4');
+      expect(hits).toBe(0);
+    } finally {
+      outside.close();
+      await call('world_destroy', { world: w });
+    }
+  });
+
+  it('refuses a stand-in that asks to play an origin nobody approved', async () => {
+    const before = h.worlds().length;
+    const made = await call('world_create', { tenants: ['south'], standins: ['lurker'] });
+    expect(made.error).toBe(true);
+    expect(made.text).toContain('asks to play https://cdn.example.com in the browser');
+    expect(h.worlds().length).toBe(before);
   });
 
   it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {

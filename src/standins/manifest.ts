@@ -25,6 +25,13 @@ export type Behaviour = (typeof BEHAVIOURS)[number];
 /** The ones Swarmbox applies itself, in front of every stand-in; the rest are a stand-in's own. */
 export const GENERAL: readonly Behaviour[] = ['fail', 'hang', 'slow', 'limit', 'duplicate', 'reorder'];
 
+/** One https origin, exactly: lowercase host labels and an optional port, nothing that a router reads as a pattern. */
+export const ExactOrigin = z
+  .string()
+  .regex(
+    /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::\d{1,5})?$/,
+    'an exact https origin: https://host or https://host:port',
+  );
 const Slug = z.string().regex(/^[a-z][a-z0-9-]{1,39}$/, 'lowercase letters, digits and dashes');
 // Words the agent will read: short, one line, no markup. A stand-in's manifest is checked against this before any
 // of it reaches a tool description.
@@ -64,7 +71,8 @@ export const Manifest = z.strictObject({
       .array(z.string().regex(/^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/, 'a host name'))
       .max(20)
       .optional(),
-    browser: z.strictObject({ origins: z.array(z.url()).min(1) }).optional(),
+    // Exact https origins only: no wildcard, brace, path or port range, so a pattern can never reach past one host.
+    browser: z.strictObject({ origins: z.array(ExactOrigin).min(1).max(4) }).optional(),
   }),
   accounts: z.strictObject({
     fields: z.record(
