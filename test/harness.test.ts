@@ -98,15 +98,16 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(inbox.text).toContain('Your estimate');
   });
 
-  it('reads the world’s own log, narrowed by a pattern', async () => {
+  it('reads the world’s own log, narrowed by text', async () => {
     const all = await call('world_log', { world, lines: 2 });
     expect(all.text.split('\n')).toHaveLength(2);
     const sends = await call('world_log', { world, match: 'post /api/send' });
     expect(sends.text).toContain('north POST /api/send');
     expect((await call('world_log', { world, match: 'nothing-like-this' })).text).toContain(
-      'no line matches',
+      'no line contains',
     );
-    expect((await call('world_log', { world, match: '(' })).error).toBe(true);
+    // Text, not a pattern: what would be a broken or runaway pattern is just looked for.
+    expect((await call('world_log', { world, match: '(a+)+$' })).error).toBe(false);
   });
 
   it('refuses a click behind an open dialog, naming the dialog', async () => {

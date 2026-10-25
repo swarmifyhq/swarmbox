@@ -103,12 +103,12 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'Read a world’s server log',
       description:
         `The latest lines of the world’s own server output (${product.name}’s logs), newest last: where the cause ` +
-        'is when a screen or a tool says only that something went wrong. match narrows it (a regular expression, ' +
-        'e.g. a request id from the feed, "error", or a time).',
+        'is when a screen or a tool says only that something went wrong. match keeps the lines containing it, in ' +
+        'any case: a request id from the feed, "error", an action name, a time.',
       inputSchema: {
         world: z.string(),
         lines: z.int().min(1).max(2000).optional().describe('Default 100'),
-        match: z.string().max(200).optional().describe('A regular expression; case-insensitive'),
+        match: z.string().min(1).max(200).optional().describe('Text the lines contain, in any case'),
       },
       annotations: { readOnlyHint: true },
     },
@@ -116,14 +116,10 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       guard(async () => {
         const w = h.world(world).world;
         if (!w.log) throw new HarnessError(`${product.name} doesn’t share its worlds’ logs`);
-        let re: RegExp | undefined;
-        try {
-          re = match ? new RegExp(match, 'i') : undefined;
-        } catch (e) {
-          throw new HarnessError(`match is not a regular expression: ${(e as Error).message}`);
-        }
-        const out = w.log({ lines: lines ?? 100, ...(re ? { match: re } : {}) });
-        return text(out.length ? out.join('\n') : match ? `no line matches /${match}/` : 'the log is empty');
+        // Plain text, not a pattern: a pattern runs in this process, and a bad one on a long line would stall
+        // every screen.
+        const out = w.log({ lines: lines ?? 100, ...(match ? { match } : {}) });
+        return text(out.length ? out.join('\n') : match ? `no line contains "${match}"` : 'the log is empty');
       }),
   );
 

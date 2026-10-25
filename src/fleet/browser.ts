@@ -202,15 +202,22 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
       onContext?.(context);
-      // Before the first page: an app that reads "today" as it starts would otherwise draw this machine's
-      // date, or the epoch, until something made it look again.
-      if (clock) {
-        if (clock.paused) await context.clock.setFixedTime(new Date(clock.at));
-        else await context.clock.setSystemTime(new Date(clock.at));
+      let page: Page;
+      try {
+        // Before the first page: an app that reads "today" as it starts would otherwise draw this machine's
+        // date, or the epoch, until something made it look again.
+        if (clock) {
+          if (clock.paused) await context.clock.setFixedTime(new Date(clock.at));
+          else await context.clock.setSystemTime(new Date(clock.at));
+        }
+        page = await context.newPage();
+        // load, not domcontentloaded: an app drawn by its scripts is drawn after the HTML.
+        await page.goto(path, { waitUntil: 'load' });
+      } catch (e) {
+        // A screen that can't be put on the world's time or opened is not left half-made, holding a context.
+        await context.close().catch(() => undefined);
+        throw e;
       }
-      const page = await context.newPage();
-      // load, not domcontentloaded: an app drawn by its scripts is drawn after the HTML.
-      await page.goto(path, { waitUntil: 'load' });
       const screen: Screen = {
         signIn,
         address: ip,

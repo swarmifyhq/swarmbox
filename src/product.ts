@@ -102,9 +102,10 @@ export interface ProductWorld {
   notes?(): string[];
   /**
    * The world's own server output, latest last: what a failure's stack is in when a screen only says
-   * "something went wrong". At most `lines`, only those matching `match` when given. Never secrets.
+   * "something went wrong". At most `lines`, only those containing `match` when given (any case). Never
+   * secrets.
    */
-  log?(opts: { lines: number; match?: RegExp }): string[];
+  log?(opts: { lines: number; match?: string }): string[];
   stop(): Promise<void>;
 }
 
