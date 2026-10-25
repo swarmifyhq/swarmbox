@@ -181,7 +181,9 @@ These are Swarmbox's own, with no stand-in involved:
 
 - **Each stand-in runs in an operating-system sandbox, with no network at all.** On macOS that's Seatbelt, as
   Anthropic's open-source sandbox runtime does it; on Linux, bubblewrap; containers are the fallback.
-  - It can read its own package and write its own temporary folder, and nothing else.
+  - It can read its own package, Node and Swarmbox's kit, and read and write its own temporary folder. The user's
+    files and every temp folder are denied, since worlds keep their database sockets there and other stand-ins
+    their state.
   - It gets no sockets of any kind and none of the developer's environment. Its only channel is stdin and stdout,
     to Swarmbox.
   - Swarmbox's own stand-ins run this way too, so the path every community stand-in takes is always the one in use.
@@ -192,7 +194,9 @@ These are Swarmbox's own, with no stand-in involved:
   outside the scenario's own words (a message body, an email) can be screened by Jev before the agent reads it; Jev
   is an optional plugin.
 - **A fake key can never work in production.**
-  - Every credential a stand-in issues carries `swarmbox` in it, e.g. `sk_test_swarmbox_…` or `ACswarmbox…`.
+  - Every credential a stand-in issues carries a mark: the word `swarmbox` where the format allows it
+    (`sk_test_swarmbox_…`), and the hex mark `c0ffee5b` where only hex will do (a Twilio AccountSid,
+    `ACc0ffee5b…`).
   - Stand-ins refuse real-looking keys (`sk_live_…`, `AKIA…`).
   - The package exports `assertNoStandins(env)`, for a product to call at start-up in production. It refuses
     Swarmbox credentials, loopback provider addresses, and Swarmbox's local certificate authority.

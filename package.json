@@ -1,7 +1,7 @@
 {
   "name": "@swarmifyhq/swarmbox",
   "license": "MIT",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A sandbox where AI agents run your product in real browsers against throwaway worlds: they see what is on each screen and what the server did, log findings, and end with checks and a report.",
   "type": "module",
   "packageManager": "pnpm@11.11.0",
@@ -31,6 +31,7 @@
     "test:browser": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.79",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.7"
   },

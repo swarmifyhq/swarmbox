@@ -89,3 +89,24 @@ export {
   type OpenDialog,
   type Stroke,
 } from './fleet/sight.ts';
+export {
+  BEHAVIOURS,
+  GENERAL,
+  Manifest,
+  matchPath,
+  operationOf,
+  type Behaviour,
+} from './standins/manifest.ts';
+export { HEX_MARK, MARK, type ClockState as StandInClock, type Rule } from './standins/protocol.ts';
+export { startStandIn, type LogEntry, type StandIn, type StandInOptions } from './standins/runner.ts';
+export {
+  defineStandIn,
+  hexId,
+  json,
+  makeCredential,
+  type Reply,
+  type StandInContext,
+  type StandInDefinition,
+  type StandInRequest,
+} from './standins/sdk.ts';
+export { assertNoStandins, standInLeaks, type StandInLeak } from './standins/guard.ts';
