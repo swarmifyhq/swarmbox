@@ -201,11 +201,15 @@ describe('a run of a scenario', () => {
     const tech = h.screens().find((s) => s.persona.id === 'demo-shop-ben')!;
     expect(tech.screen.page.url()).toContain('/tech/');
 
-    // The day began when the scenario said, by the shop's own clocks, and the cast signed in on it.
+    // The day began when the scenario said, in the shop's zone, and the cast signed in on it. The page's
+    // clock is read and shown here, in Node: Chromium's own tzdata can disagree with Node's on a zone.
     const ana = h.screens().find((s) => s.persona.id === 'demo-shop-ana')!;
-    const shown = await ana.screen.page.evaluate(() =>
-      new Intl.DateTimeFormat('sv-SE', { dateStyle: 'short', timeStyle: 'short' }).format(new Date()),
-    );
+    const at = await ana.screen.page.evaluate(() => Date.now());
+    const shown = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: ana.persona.timeZone,
+      dateStyle: 'short',
+      timeStyle: 'short',
+    }).format(at);
     expect(shown).toBe('2030-03-02 09:00');
     expect(await ana.screen.page.textContent('main')).toContain('Signed in as Ana');
     const office = ana.id;

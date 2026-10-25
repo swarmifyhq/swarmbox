@@ -19,7 +19,9 @@ Part of [Swarmify](https://github.com/swarmifyhq/swarmify). Private for now.
   tablet either way up or a desktop, light or dark.
 - **Time.** Move a world's clock forward, and every screen follows; people stay signed in across the jump
   (`renewSignIn`). A scenario can say when its day starts (`world.startsAt`: "09:00", or a date and time
-  in the tenant's zone, to test across a time change).
+  in the tenant's zone, to test across a time change). Swarmbox works out times with Node's tzdata; a
+  screen shows them with Chromium's own, and the two can differ on a zone whose rules changed recently.
+  A time a screen shows an hour out may be that, not your product.
 - **Runs.** A scenario in plain words (what to try, what good looks like, who is on screen), findings with
   screenshots, Playwright traces of every screen, your checks at the end, and one HTML report.
 - **A control room** at http://127.0.0.1:3100: every screen live, and take-over, during which the agent's
