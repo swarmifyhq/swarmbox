@@ -98,6 +98,17 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(inbox.text).toContain('Your estimate');
   });
 
+  it('reads the world’s own log, narrowed by a pattern', async () => {
+    const all = await call('world_log', { world, lines: 2 });
+    expect(all.text.split('\n')).toHaveLength(2);
+    const sends = await call('world_log', { world, match: 'post /api/send' });
+    expect(sends.text).toContain('north POST /api/send');
+    expect((await call('world_log', { world, match: 'nothing-like-this' })).text).toContain(
+      'no line matches',
+    );
+    expect((await call('world_log', { world, match: '(' })).error).toBe(true);
+  });
+
   it('refuses a click behind an open dialog, naming the dialog', async () => {
     const screen = h.screens().find((s) => s.persona.id === 'north-ana')!.id;
     await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Send estimate' } });
@@ -169,6 +180,11 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     // A day on, past the twelve-hour session it opened with: still signed in, as a person who kept using it.
     await s.screen.page.reload();
     expect(await s.screen.page.textContent('main')).toContain('Signed in as Ana');
+    // A screen opened now starts on the world's day from its first script, not this machine's.
+    const later = await call('screen_open', { world, person: 'north-ana' });
+    const page = h.screen(/^screen (s\d+)/.exec(later.text)![1]!).screen.page;
+    const started = await page.evaluate(() => (window as unknown as { startedAt: number }).startedAt);
+    expect(started - before).toBeGreaterThan(86_000_000);
   });
 
   it('runs the product’s checks', async () => {

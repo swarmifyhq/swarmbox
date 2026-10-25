@@ -531,7 +531,14 @@ export function createHarness<W extends ProductWorld>(
       });
       if (signals.length > SIGNALS_KEPT) signals.shift();
     };
+    // The world's time now, read before the screen opens so its first page starts on it: a running clock has
+    // moved on since it was last set.
+    if (w.clock && w.world.hooks) {
+      const now = await w.world.hooks.clock();
+      w.clock = { at: now.process.at, paused: now.clock.frozenAt !== null };
+    }
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
+      ...(w.clock ? { clock: w.clock } : {}),
       ...(options.address ? { address: options.address } : {}),
       ...(options.device ? { device: options.device } : {}),
       ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
@@ -611,13 +618,8 @@ export function createHarness<W extends ProductWorld>(
     await cdp.send('Page.startScreencast', SCREENCAST);
     screens.set(made.id, made);
     try {
-      // A screen opened after the world's clock moved starts on the world's time, not this machine's, read
-      // now: a running clock has moved on since it was last set.
-      if (w.clock && w.world.hooks) {
-        const now = await w.world.hooks.clock();
-        w.clock = { at: now.process.at, paused: now.clock.frozenAt !== null };
-        await followClock(made, w.clock);
-      }
+      // The page started on the world's time (fleet.open); this marks the screen as following the clock.
+      if (w.clock) await followClock(made, w.clock);
       await who.signIn?.ready?.(screen.page);
     } catch (e) {
       // A screen that can't be put on the world's time, or past its app's first screen, is not handed out

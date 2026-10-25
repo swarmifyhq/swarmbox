@@ -45,6 +45,8 @@ const page = (
   <label>To <input name="to" value="+15550100"></label>
   <button type="button" id="cancel">Cancel</button><button type="button" id="send">Send</button></dialog>
 <script>
+  // What "now" was as the page started, as an app that reads today once would see it.
+  window.startedAt = Date.now();
   const d = document.getElementById('d');
   document.getElementById('open').onclick = () => d.showModal();
   document.getElementById('cancel').onclick = () => d.close();
@@ -220,6 +222,8 @@ async function startSample(tenants: string[], port: number, closed: string[] = [
         };
       }),
     notes: () => ['a sample world', ...closed.map((t) => `${t} is closed for the season`)],
+    // Its server's log is the requests it served, with a line for each refusal.
+    log: ({ lines, match }) => requests.filter((l) => !match || match.test(l)).slice(-lines),
     stop: () => new Promise<void>((r) => server.close(() => r())),
   };
 }

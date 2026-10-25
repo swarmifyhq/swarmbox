@@ -100,6 +100,11 @@ export interface ProductWorld {
   check(): Promise<CheckResult[]>;
   /** Extra lines about the world for world_list: kept, migrations that failed. */
   notes?(): string[];
+  /**
+   * The world's own server output, latest last: what a failure's stack is in when a screen only says
+   * "something went wrong". At most `lines`, only those matching `match` when given. Never secrets.
+   */
+  log?(opts: { lines: number; match?: RegExp }): string[];
   stop(): Promise<void>;
 }
 
