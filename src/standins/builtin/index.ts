@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StandInSource } from '../../product.ts';
 
-export const BUILTIN_STANDINS = ['twilio', 'email'] as const;
+export const BUILTIN_STANDINS = ['twilio', 'email', 's3'] as const;
 export type BuiltinStandIn = (typeof BUILTIN_STANDINS)[number];
 
 const HERE = dirname(fileURLToPath(import.meta.url));

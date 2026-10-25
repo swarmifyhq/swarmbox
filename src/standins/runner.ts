@@ -272,6 +272,10 @@ function descendants(root: number): number[] {
   return out;
 }
 
+/** A manifest's answer body: text as it is (S3's XML), anything else as JSON. */
+const answerBody = (body: unknown): Buffer =>
+  Buffer.from(typeof body === 'string' ? body : JSON.stringify(body ?? {}));
+
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -712,7 +716,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       return answer(
         a.status,
         { 'content-type': 'application/json', ...a.headers },
-        Buffer.from(JSON.stringify(a.body ?? {})),
+        answerBody(a.body),
         'fail',
       );
     }
@@ -723,7 +727,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       return answer(
         a.status,
         { 'content-type': 'application/json', 'retry-after': retry, ...a.headers },
-        Buffer.from(JSON.stringify(a.body ?? {})),
+        answerBody(a.body),
         'limit',
       );
     }
@@ -765,9 +769,14 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     const status = Number(reply.status);
     if (reply.type !== 'response' || !Number.isInteger(status) || status < 100 || status > 599)
       return answer(502, { 'content-type': 'text/plain' }, Buffer.from('the stand-in gave no valid answer'));
+    const replyHeaders = shapeHeaders(reply.headers);
+    // A HEAD answer says the size of what a GET would send: kept, when it is a number, since it frames nothing.
+    const length = isObject(reply.headers) ? reply.headers['content-length'] : undefined;
+    if (method === 'HEAD' && typeof length === 'string' && /^\d{1,15}$/.test(length))
+      replyHeaders['content-length'] = length;
     answer(
       status,
-      shapeHeaders(reply.headers),
+      replyHeaders,
       decode(typeof reply.body === 'string' ? reply.body : ''),
       slow ? 'slow' : undefined,
     );

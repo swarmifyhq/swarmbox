@@ -1,0 +1,35 @@
+{
+  "name": "s3",
+  "provider": "Amazon S3 compatible",
+  "apiVersion": "2006-03-01",
+  "surfaces": ["objects", "multipart"],
+  "operations": [
+    { "name": "bucket.put", "method": "PUT", "path": "/:bucket" },
+    { "name": "bucket.head", "method": "HEAD", "path": "/:bucket" },
+    { "name": "bucket.get", "method": "GET", "path": "/:bucket/" },
+    { "name": "bucket.list", "method": "GET", "path": "/:bucket" },
+    { "name": "object.put", "method": "PUT", "path": "/:bucket/*" },
+    { "name": "object.get", "method": "GET", "path": "/:bucket/*" },
+    { "name": "object.head", "method": "HEAD", "path": "/:bucket/*" },
+    { "name": "object.delete", "method": "DELETE", "path": "/:bucket/*" },
+    { "name": "object.post", "method": "POST", "path": "/:bucket/*" },
+    { "name": "preflight", "method": "OPTIONS", "path": "/:bucket/*" }
+  ],
+  "connect": { "baseUrls": { "endpoint": "/" } },
+  "accounts": { "fields": { "accessKeyId": "id", "secretAccessKey": "secret" } },
+  "behaviours": ["fail", "hang", "slow", "limit", "reject"],
+  "answers": {
+    "fail": {
+      "status": 500,
+      "headers": { "content-type": "application/xml" },
+      "body": "<Error><Code>InternalError</Code><Message>We encountered an internal error. Please try again.</Message></Error>"
+    },
+    "limit": {
+      "status": 503,
+      "headers": { "content-type": "application/xml" },
+      "body": "<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message></Error>"
+    }
+  },
+  "inbound": [],
+  "clock": "real"
+}
