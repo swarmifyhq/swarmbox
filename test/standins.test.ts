@@ -379,7 +379,8 @@ describe('a stand-in that misbehaves', () => {
       expect(live.status).toBe(401);
       expect(JSON.stringify(s.log())).not.toContain('sk_live_ABCDEFGH12345678');
 
-      // Deliveries anywhere but a tenant's host, to the product's hooks, or with a made-up method, are refused;
+      // Deliveries anywhere but a tenant's host (the bare base domain too: its manifest doesn't say its webhooks are
+      // platform-wide), to the product's hooks however the path is spelled, or with a made-up method, are refused;
       // the one that goes through carries only the headers a webhook may.
       const before = hooks.length;
       expect((await fetch(`${s.origin}/deliver-bad`, { method: 'POST' })).status).toBe(202);
@@ -394,9 +395,8 @@ describe('a stand-in that misbehaves', () => {
           .slice(before)
           .map((h) => h.path)
           .sort(),
-      ).toEqual(['/', '/headers']);
-      // The bare base domain is the product's own host, and gets the one with no path to speak of.
-      expect(s.log().filter((e) => e.kind === 'refused')).toHaveLength(3);
+      ).toEqual(['/headers']);
+      expect(s.log().filter((e) => e.kind === 'refused')).toHaveLength(8);
 
       // Its words reach Swarmbox's callers as plain text: one line, no markup.
       const refusal = await s.clearRules().then(

@@ -77,7 +77,8 @@ interface StandInManifest {
   };
   accounts: { fields: Record<string, 'id' | 'secret' | 'phone' | 'email' | 'text'> };
   behaviours: Behaviour[]; // which of the vocabulary it supports
-  webhooks?: { headers: string[] }; // what its webhooks may carry besides content-type, user-agent and accept
+  webhooks?: { headers: string[]; platform?: boolean }; // what its webhooks may carry besides content-type,
+  // user-agent and accept; platform: they may also go to the product's own host
   answers?: {
     // how its provider says "down" and "slow down", for the behaviours Swarmbox applies itself
     fail?: { status: number; headers?: Record<string, string>; body?: unknown };
@@ -213,10 +214,12 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
     - `requestTimeoutMs` (60 s by default) for a request, after which the product gets a 504.
   - When it exits, everything waiting on it is answered.
 - **It can deliver only to its world.**
-  - A webhook goes over plain HTTP to a tenant's host (`<tenant>.<baseDomain>`) or the product's own
-    (`<baseDomain>`, where a platform-wide webhook like one email account's goes), on the world's port, and nowhere
-    else.
-  - It can't reach `localhost`, an address, or the product's `/_sandbox` hooks.
+  - A webhook goes over plain HTTP to a tenant's host (`<tenant>.<baseDomain>`), on the world's port, and nowhere
+    else. A stand-in whose manifest sets `webhooks.platform` (one email account for the whole platform) may also
+    deliver to the product's own host, `<baseDomain>`.
+  - It can't reach `localhost`, an address, or the product's `/_sandbox` hooks. The path is decoded until it stops
+    changing and read without case, so `/%5Fsandbox`, `//_sandbox` and `/_SANDBOX` are refused too, as is any path
+    with `_sandbox` in it.
   - It can use only standard methods, and carry only `content-type`, `user-agent`, `accept` and the headers its
     manifest declares under `webhooks.headers` (its signature and timestamp). So no cookies and no forwarded
     addresses.
