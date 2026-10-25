@@ -55,6 +55,8 @@ export interface StandInContext {
   settings: Map<string, Record<string, string>>;
   /** A folder the stand-in may write. */
   tmp: string;
+  /** Tenants' hosts are <tenant>.<baseDomain>; the product's own is the bare base domain. */
+  baseDomain: string;
 }
 
 /** The product's answer to a webhook: 0 when it couldn't be delivered. */
@@ -141,6 +143,7 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
   let clock: ClockState | null = null;
   let clockSetAt = Date.now();
   let tmp = '';
+  let baseDomain = '';
   let rules: Rule[] = [];
   const waiting = new Map<string, (d: Delivered) => void>();
   const settings = new Map<string, Record<string, string>>();
@@ -188,6 +191,9 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
     get tmp() {
       return tmp;
     },
+    get baseDomain() {
+      return baseDomain;
+    },
   };
 
   const reply = (id: string, f: () => unknown) =>
@@ -212,6 +218,7 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
         clock = m.clock;
         clockSetAt = Date.now();
         tmp = m.tmp;
+        baseDomain = m.baseDomain;
         send({ type: 'ready' });
         return;
       case 'clock':
