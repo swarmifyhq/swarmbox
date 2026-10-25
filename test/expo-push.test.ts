@@ -2,6 +2,7 @@
 // DeviceNotRegistered when a token no longer reaches its iPad, at the ticket or the receipt; Expo's request limits;
 // enhanced push security; receipts that come late, on the world's clock.
 
+import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { builtinStandIn } from '../src/standins/builtin/index.ts';
 import { startStandIn, type StandIn } from '../src/standins/runner.ts';
@@ -99,8 +100,42 @@ describe('the Expo push stand-in', () => {
     const ok = await send({ to: ipad, title: 'x' }, secure.accessToken);
     expect(ok.status).toBe(200);
     const id = ticketId(ok.body.data![0]);
-    expect(await receipts([id])).toEqual({});
+    const unsigned = await post('getReceipts', { ids: [id] });
+    expect(unsigned.status).toBe(401);
     expect(await receipts([id], secure.accessToken)).toEqual({ [id]: { status: 'ok' } });
+
+    // One project's token never sends to another's devices, or reads its receipts, locked or not.
+    const other = await expo.account('neighbour');
+    const theirs = await register('acme', 'not yours');
+    const crossed = await send({ to: theirs, title: 'x' }, other.accessToken);
+    expect(crossed.status).toBe(401);
+    expect(crossed.body.errors![0]!.code).toBe('UNAUTHORIZED');
+    const own = ticketId((await send({ to: theirs, title: 'x' })).body.data![0]);
+    expect((await post('getReceipts', { ids: [own] }, other.accessToken)).status).toBe(401);
+  });
+
+  it('takes a gzipped body, as expo-server-sdk sends one over 1 KB', async () => {
+    const ipad = await register('acme', 'zipped');
+    const batch = Array.from({ length: 20 }, (_, i) => ({
+      to: ipad,
+      title: `Job ${i}`,
+      body: 'x'.repeat(100),
+    }));
+    const r = await fetch(`${expo.baseUrls.api}/--/api/v2/push/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', accept: 'application/json' },
+      body: new Uint8Array(gzipSync(JSON.stringify(batch))),
+    });
+    expect(r.status).toBe(200);
+    const { data } = (await r.json()) as { data: Ticket[] };
+    expect(data.filter((t) => t.status === 'ok')).toHaveLength(20);
+    // A body that unpacks past its limit is refused, not unpacked.
+    const bomb = await fetch(`${expo.baseUrls.api}/--/api/v2/push/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      body: new Uint8Array(gzipSync(Buffer.alloc(8 * 1024 * 1024, ' '))),
+    });
+    expect(bomb.status).toBe(400);
   });
 
   it('a wiped iPad: DeviceNotRegistered at the receipt (or the ticket), and on every send after', async () => {
