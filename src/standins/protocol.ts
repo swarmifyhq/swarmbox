@@ -42,7 +42,8 @@ export interface WireResponse {
 
 /** Swarmbox to the stand-in. */
 export type ToStandIn =
-  | { type: 'start'; baseDomain: string; clock: ClockState | null; tmp: string }
+  /** origin: the stand-in's own address, http://127.0.0.1:<port>, for links it gives out (a recording's URL). */
+  | { type: 'start'; baseDomain: string; clock: ClockState | null; tmp: string; origin: string }
   | ({
       type: 'request';
       id: string;
@@ -50,13 +51,15 @@ export type ToStandIn =
       params: Record<string, string>;
       tenant: string | null;
     } & WireRequest)
-  | { type: 'account'; id: string; tenant: string }
+  /** settings: what a person sets in the provider's console for this account (a number's webhook addresses). */
+  | { type: 'account'; id: string; tenant: string; settings: Record<string, string> }
   | { type: 'behave'; id: string; rule: Rule }
   | { type: 'unbehave'; id: string; ruleId: string | null }
   | { type: 'inbound'; id: string; kind: string; body: Record<string, unknown> }
   | { type: 'clock'; clock: ClockState }
   | { type: 'reset'; id: string }
-  | { type: 'delivered'; id: string; status: number; error?: string };
+  /** The product's answer to a webhook: its status, type and body (base64, at most 1 MB), e.g. TwiML. */
+  | { type: 'delivered'; id: string; status: number; contentType: string; body: string };
 
 /** The stand-in to Swarmbox. */
 export type FromStandIn =

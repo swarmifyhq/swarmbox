@@ -110,3 +110,8 @@ export {
   type StandInRequest,
 } from './standins/sdk.ts';
 export { assertNoStandins, standInLeaks, type StandInLeak } from './standins/guard.ts';
+export { BUILTIN_STANDINS, builtinStandIn, type BuiltinStandIn } from './standins/builtin/index.ts';
+export { propMaker, type Prop, type PropKind, type PropMaker } from './device/props.ts';
+export type { DeviceState } from './device/device.ts';
+export type { Delivered } from './standins/sdk.ts';
+export type { StandInEndpoint, StandInSource } from './product.ts';

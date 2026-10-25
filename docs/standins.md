@@ -101,7 +101,9 @@ server does. Swarmbox does everything that touches the network, for every stand-
 - **It applies the general behaviours**, `fail`, `hang`, `slow` and `limit`, before a request reaches the stand-in,
   using the provider's own status codes and headers from the manifest. So a stand-in implements only what's
   particular to its provider: `reject`, `decline`, `undeliver`, `bounce`, `timeout`, `late`, `manual` and `gone`.
-- **It delivers webhooks.** The stand-in sends `{type: "deliver", id, url, method, headers, body}`. For a URL on a
+- **It delivers webhooks, and hands back the product's answer.** The stand-in sends
+  `{type: "deliver", id, url, method, headers, body}` and gets `{type: "delivered", id, status, contentType, body}`
+  (at most 1 MB): Twilio, for one, reads the product's answer to a call as the TwiML to run. For a URL on a
   tenant's host, Swarmbox posts it to the world's product over loopback with that URL's `Host` header, so a product
   behind one port serves every tenant's host. The stand-in signs the URL as written. `duplicate` and `reorder` are
   applied here.
@@ -110,14 +112,14 @@ server does. Swarmbox does everything that touches the network, for every stand-
 
 The stand-in's own messages are for what only it knows:
 
-| Message from Swarmbox                     | Does                                                                                     |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `start {config}`                          | First, once: the world's base domain, the clock it signs with, and its temporary folder. |
-| `account {tenant}`                        | Make an account; it answers with the credentials, all marked fake.                       |
-| `behave {behaviour, match, count, param}` | One of its own behaviours, applied, listed or cleared.                                   |
-| `inbound {kind, ...typed body}`           | Make something arrive. It answers with what it delivered.                                |
-| `clock {at, paused}`                      | The world's time, sent whenever the clock moves.                                         |
-| `reset`                                   | Forget everything except its accounts.                                                   |
+| Message from Swarmbox                     | Does                                                                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start {config}`                          | First, once: the world's base domain, the clock it signs with, and its temporary folder.                                                                                        |
+| `account {tenant, settings}`              | Make an account, with what the product set for it as a person would in the provider's console (a number's webhook addresses). It answers with the credentials, all marked fake. |
+| `behave {behaviour, match, count, param}` | One of its own behaviours, applied, listed or cleared.                                                                                                                          |
+| `inbound {kind, ...typed body}`           | Make something arrive. It answers with what it delivered.                                                                                                                       |
+| `clock {at, paused}`                      | The world's time, sent whenever the clock moves.                                                                                                                                |
+| `reset`                                   | Forget everything except its accounts.                                                                                                                                          |
 
 Swarmbox ships a small SDK, `defineStandIn({manifest, routes, inbound, behaviours})`, so an author writes handlers,
 not a server or a message loop.
@@ -217,6 +219,9 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
     manifest declares under `webhooks.headers` (its signature and timestamp). So no cookies and no forwarded
     addresses.
   - At most 64 deliveries can be in flight at once.
+  - The product's answer comes back to the stand-in (Twilio runs it as TwiML). So a stand-in can read what a
+    tenant's host serves without signing in, as anyone on the internet could. It's still sandboxed, and what it
+    makes of it reaches the agent only framed as its own.
 - **A fake key can never work in production.**
   - Every credential a stand-in issues carries a mark, and Swarmbox checks each account before using it:
     - ids, secrets and text carry the word `swarmbox`, or the hex mark `c0ffee5b` where only hex will do (a
@@ -239,6 +244,15 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
   - Its stderr goes to the operator's console, never to the agent.
   - Everything is shown to the agent marked as data. Free text from outside the scenario's own words (a message
     body, an email) can be screened by Jev before the agent reads it; Jev is an optional plugin.
+
+## The stand-ins that come with Swarmbox
+
+| Name     | Plays                  | What it covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `twilio` | Twilio, API 2010-04-01 | Texts with signed status callbacks (sent, then delivered or undelivered), refusals (21610), receipts by hand; a customer's text to the number's `smsUrl`; a call to its `voiceUrl` run through the product's TwiML (Dial, Say, Record, Reject, Hangup, each verb's `action` followed, and the next verb after a dial with none), answered at once and followed with the `call-status` inbound, answered, unanswered or busy, recorded, or held ringing until the caller hangs up, with its end posted to `voiceStatusUrl`; and the reads of calls, recordings (as MP3, at the stand-in's own address) and transcriptions. Voice Intelligence answers as not enabled. |
+
+A product lists them with `builtinStandIn('twilio')` in `Product.standins`, and gives each tenant's account its console
+settings: `account(tenant, {smsUrl, voiceUrl, voiceStatusUrl})`.
 
 ## Order of work
 

@@ -123,7 +123,10 @@ function endpointsOf(standins: Map<string, StandIn>): Record<string, StandInEndp
   return Object.fromEntries(
     [...standins].map(([name, s]) => [
       name,
-      { baseUrls: s.baseUrls, account: (tenant: string) => s.account(tenant) },
+      {
+        baseUrls: s.baseUrls,
+        account: (tenant: string, settings?: Record<string, string>) => s.account(tenant, settings),
+      },
     ]),
   );
 }
