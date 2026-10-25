@@ -24,6 +24,8 @@ const connect = (port: number) =>
     setTimeout(() => no(new Error('timeout')), 1500);
   });
 
+let listening: number | null = null;
+
 defineStandIn({
   manifest,
   routes: {
@@ -33,13 +35,16 @@ defineStandIn({
         loopback: await attempt(() => connect(Number(req.query.get('port')))),
         listen: await attempt(
           () =>
-            new Promise<void>((ok, no) =>
-              net
-                .createServer()
-                .on('error', no)
-                .listen(0, '127.0.0.1', () => ok()),
-            ),
+            new Promise<void>((ok, no) => {
+              const server = net.createServer().on('error', no);
+              server.listen(0, '127.0.0.1', () => {
+                listening = (server.address() as net.AddressInfo).port;
+                ok();
+              });
+            }),
         ),
+        // Where it listens, if it could: the test checks nothing outside the sandbox can reach it.
+        listening,
         readSecret: await attempt(() => readFileSync(String(req.query.get('secret')))),
         readSystem: await attempt(() => readFileSync('/etc/hosts')),
         // A process of its own in its own session, which would outlive a group kill. Denied in the sandbox on
