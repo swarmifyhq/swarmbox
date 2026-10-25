@@ -651,7 +651,7 @@ export function createHarness<W extends ProductWorld>(
       const now = await w.world.hooks.clock();
       w.clock = { at: now.process.at, paused: now.clock.frozenAt !== null };
     }
-    const device: DeviceState = { files: [], camera: null };
+    const device: DeviceState = { files: [], camera: null, cameraVersion: 0 };
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
       ...(w.clock ? { clock: w.clock } : {}),
       ...(options.address ? { address: options.address } : {}),
@@ -1068,7 +1068,7 @@ export function createHarness<W extends ProductWorld>(
     },
     async showCamera(screenId, propId) {
       const s = getScreen(screenId);
-      await showOnCamera(s.screen.context, s.device, propId ? props.get(propId) : null);
+      showOnCamera(s.device, propId ? props.get(propId) : null);
     },
     async setLocation(screenId, latitude, longitude) {
       await setLocation(getScreen(screenId).screen.context, latitude, longitude);

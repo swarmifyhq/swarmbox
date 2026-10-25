@@ -4,11 +4,14 @@
 // JPEG comment, a PNG text chunk, a line of the PDF's text).
 
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright-core';
 
 export type PropKind = 'photo' | 'document' | 'signature';
+
+/** Props kept at once; past it the oldest go, with their files. */
+export const PROPS_KEPT = 200;
 
 export interface Prop {
   id: string;
@@ -29,15 +32,17 @@ export interface Prop {
 const escape = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-/** A JPEG with a comment segment (FF FE) right after its start: where a photo carries its tag. */
+/** A JPEG with a comment segment (FF FE) after its start and its JFIF header (APP0): where a photo carries its tag. */
 export function withJpegComment(jpeg: Buffer, text: string): Buffer {
   if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error('not a JPEG');
+  // After APP0 when there is one, where strict readers expect it to stay first.
+  const at = jpeg[2] === 0xff && jpeg[3] === 0xe0 ? 4 + jpeg.readUInt16BE(4) : 2;
   const body = Buffer.from(text, 'latin1');
   const segment = Buffer.alloc(4 + body.length);
   segment.writeUInt16BE(0xfffe, 0);
   segment.writeUInt16BE(body.length + 2, 2);
   body.copy(segment, 4);
-  return Buffer.concat([jpeg.subarray(0, 2), segment, jpeg.subarray(2)]);
+  return Buffer.concat([jpeg.subarray(0, at), segment, jpeg.subarray(at)]);
 }
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
@@ -75,8 +80,15 @@ export interface PropMaker {
 export function propMaker(dir: string): PropMaker {
   const props = new Map<string, Prop>();
   let browser: Promise<Browser> | undefined;
+  // Drawn offline: the HTML is static and escaped, and there's still no reason for this browser to reach anything.
   const page = async () =>
-    (await (browser ??= chromium.launch({ channel: 'chromium', headless: true }))).newPage();
+    (
+      await (
+        await (browser ??= chromium.launch({ channel: 'chromium', headless: true }))
+      ).newContext({
+        offline: true,
+      })
+    ).newPage();
 
   return {
     async make(kind, about) {
@@ -117,7 +129,7 @@ export function propMaker(dir: string): PropMaker {
           [ext, mime] = ['pdf', 'application/pdf'];
         }
       } finally {
-        await p.close();
+        await p.context().close();
       }
       mkdirSync(dir, { recursive: true });
       const name = `${
@@ -142,6 +154,12 @@ export function propMaker(dir: string): PropMaker {
         ...(kind === 'photo' ? { colour } : {}),
       };
       props.set(id, prop);
+      // At most PROPS_KEPT: the oldest go, with their files.
+      while (props.size > PROPS_KEPT) {
+        const [oldest, old] = props.entries().next().value!;
+        props.delete(oldest);
+        rmSync(old.file, { force: true });
+      }
       return prop;
     },
     get(id) {
@@ -154,6 +172,9 @@ export function propMaker(dir: string): PropMaker {
       const b = await browser?.catch(() => undefined);
       browser = undefined;
       await b?.close();
+      // A world's props are for its run: none outlive the harness.
+      for (const p of props.values()) rmSync(p.file, { force: true });
+      props.clear();
     },
   };
 }

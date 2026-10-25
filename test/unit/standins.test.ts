@@ -128,11 +128,13 @@ describe('the process table on Linux', () => {
 
 describe('a prop’s tag inside its file', () => {
   it('goes in a JPEG comment right after the start, and the PNG’s first chunk after its header, CRC and all', () => {
-    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x02, 0xff, 0xd9]);
+    // SOI, an APP0 of four bytes (length 6 counts itself), EOI: the comment goes after APP0, which stays first.
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x06, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
     const tagged = withJpegComment(jpeg, 'swarmbox-prop:prop_1');
-    expect([...tagged.subarray(0, 4)]).toEqual([0xff, 0xd8, 0xff, 0xfe]);
-    expect(tagged.readUInt16BE(4)).toBe('swarmbox-prop:prop_1'.length + 2);
-    expect(tagged.subarray(-6)).toEqual(jpeg.subarray(2));
+    expect([...tagged.subarray(0, 4)]).toEqual([0xff, 0xd8, 0xff, 0xe0]);
+    expect([...tagged.subarray(10, 12)]).toEqual([0xff, 0xfe]);
+    expect(tagged.readUInt16BE(12)).toBe('swarmbox-prop:prop_1'.length + 2);
+    expect(tagged.subarray(-2)).toEqual(Buffer.from([0xff, 0xd9]));
 
     // A 1x1 PNG: signature, IHDR, IDAT, IEND.
     const png = Buffer.from(

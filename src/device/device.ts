@@ -11,6 +11,8 @@ export interface DeviceState {
   files: Prop[];
   /** What the camera shows now, if anything. */
   camera: Prop | null;
+  /** Counts camera changes, so a page reads the picture again only when it changed. */
+  cameraVersion: number;
 }
 
 /**
@@ -20,13 +22,11 @@ export interface DeviceState {
 function cameraInPage(): void {
   const md = navigator.mediaDevices;
   if (!md) return;
+  // What the camera shows lives in Swarmbox, read through two exposed functions: its version (cheap, polled) and,
+  // when that changes, the picture itself. Nothing is added to the page per prop.
   const w = window as unknown as {
-    __swarmboxCamera?: string | null;
-    __swarmboxSetCamera?: (u: string | null) => void;
-  };
-  w.__swarmboxCamera ??= null;
-  w.__swarmboxSetCamera = (url) => {
-    w.__swarmboxCamera = url;
+    __swarmboxCameraVersion?: () => Promise<number>;
+    __swarmboxCameraNow?: () => Promise<string | null>;
   };
   md.getUserMedia = async (constraints?: MediaStreamConstraints) => {
     if (!constraints?.video)
@@ -36,22 +36,38 @@ function cameraInPage(): void {
     canvas.height = 960;
     const ctx = canvas.getContext('2d')!;
     const img = new Image();
-    let shown: string | null = null;
+    let version = -1;
+    let url: string | null = null;
     const draw = () => {
-      const url = w.__swarmboxCamera ?? null;
-      if (url !== shown) {
-        shown = url;
-        if (url) img.src = url;
-      }
       if (url && img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       else {
         ctx.fillStyle = '#444';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
     };
+    const look = async () => {
+      const v = (await w.__swarmboxCameraVersion?.()) ?? 0;
+      if (v === version) return;
+      version = v;
+      url = (await w.__swarmboxCameraNow?.()) ?? null;
+      if (url) img.src = url;
+    };
+    await look();
+    await new Promise((r) => (img.complete ? r(null) : (img.onload = img.onerror = () => r(null))));
     draw();
-    setInterval(draw, 66);
-    return canvas.captureStream(15);
+    const drawing = setInterval(draw, 66);
+    const looking = setInterval(() => void look(), 500);
+    const stream = canvas.captureStream(15);
+    // A stopped camera stops its timers too.
+    for (const track of stream.getTracks()) {
+      const stop = track.stop.bind(track);
+      track.stop = () => {
+        clearInterval(drawing);
+        clearInterval(looking);
+        stop();
+      };
+    }
+    return stream;
   };
   md.enumerateDevices = async () =>
     [
@@ -78,6 +94,8 @@ export async function setUpDevice(
   note: (text: string) => void,
 ): Promise<void> {
   await context.grantPermissions(['camera', 'microphone']);
+  await context.exposeFunction('__swarmboxCameraVersion', () => state.cameraVersion);
+  await context.exposeFunction('__swarmboxCameraNow', () => (state.camera ? dataUrl(state.camera) : null));
   await context.addInitScript(cameraInPage);
   const answer = async (chooser: FileChooser) => {
     const prop = state.files.shift();
@@ -94,27 +112,10 @@ export async function setUpDevice(
   for (const page of context.pages()) watch(page);
 }
 
-/** Put a prop in front of the camera (null: nothing), in the open pages and in any the screen opens next. */
-export async function showOnCamera(
-  context: BrowserContext,
-  state: DeviceState,
-  prop: Prop | null,
-): Promise<void> {
+/** Put a prop in front of the camera (null: nothing): open pages see it within half a second, new ones at once. */
+export function showOnCamera(state: DeviceState, prop: Prop | null): void {
   state.camera = prop;
-  const url = prop ? dataUrl(prop) : null;
-  await context.addInitScript((u: string | null) => {
-    (window as unknown as { __swarmboxCamera?: string | null }).__swarmboxCamera = u;
-  }, url);
-  for (const page of context.pages())
-    await page
-      .evaluate(
-        (u: string | null) =>
-          (window as unknown as { __swarmboxSetCamera?: (x: string | null) => void }).__swarmboxSetCamera?.(
-            u,
-          ),
-        url,
-      )
-      .catch(() => undefined);
+  state.cameraVersion++;
 }
 
 export async function setLocation(

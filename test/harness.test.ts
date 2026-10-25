@@ -167,6 +167,15 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await click('Use the camera');
     await expect.poll(shown).toMatch(/^Camera sees rgb/);
     expect(await shown()).not.toBe('Camera sees rgb(68,68,68)');
+    // Another prop in front of it: the camera shows that one now, in a different colour.
+    const first = await shown();
+    const second = /^(prop_[0-9a-f]{8})/.exec(
+      (await call('prop_make', { kind: 'photo', about: 'the new valve, fitted' })).text,
+    )![1]!;
+    await call('camera_show', { screen, prop: second });
+    await click('Use the camera');
+    await expect.poll(shown).not.toBe(first);
+    expect(await shown()).toMatch(/^Camera sees rgb/);
 
     await call('location_set', { screen, lat: 49.2827, lng: -123.1207 });
     await click('Where am I');

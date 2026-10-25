@@ -201,9 +201,10 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
-      await onContext?.(context);
       let page: Page;
       try {
+        // The screen's own set-up (its device): inside, so a failure there closes the half-made context too.
+        await onContext?.(context);
         // Before the first page: an app that reads "today" as it starts would otherwise draw this machine's
         // date, or the epoch, until something made it look again.
         if (clock) {
