@@ -164,6 +164,25 @@ const READY_MS = 10_000;
 const ASK_MS = 10_000;
 const DELIVERIES_IN_FLIGHT = 64;
 const ALWAYS_SENT = new Set(['content-type', 'user-agent', 'accept']);
+/**
+ * Whether a delivery's path reaches the product's sandbox hooks however a server reads it: decoded until it stops
+ * changing (or doesn't decode), backslashes as slashes, case ignored, anywhere in the path. %5Fsandbox, //_sandbox,
+ * /_SANDBOX and /a/..%2F_sandbox are all refused; a provider's own paths never carry the word.
+ */
+export function sandboxHooks(pathname: string): boolean {
+  let path = pathname;
+  for (let i = 0; i < 5; i++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(path);
+    } catch {
+      return true;
+    }
+    if (next === path) return path.replace(/\\/g, '/').toLowerCase().includes('_sandbox');
+    path = next;
+  }
+  return true;
+}
 const cut = (b: Buffer) =>
   b.length > 4096 ? `${b.subarray(0, 4096).toString('utf8')}…` : b.toString('utf8');
 
@@ -413,8 +432,11 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
 
   // Deliveries: to a tenant's host on the world's product only; the stand-in picks the path and its declared headers.
   const world = new URL(options.deliverTo);
+  // A tenant's host, or, for a stand-in whose manifest says its webhooks are platform-wide (one email account's), the
+  // product's own: the bare base domain. Never localhost or an address. The product's sandbox hooks answer on the bare
+  // host, so a path that is, or decodes to, anything under them is refused too (sandboxHooks).
   const tenantHost = new RegExp(
-    `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.${options.baseDomain.replace(/\./g, '\\.')}$`,
+    `^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)${manifest.webhooks?.platform ? '?' : ''}${options.baseDomain.replace(/\./g, '\\.')}$`,
   );
   const declared = new Set(manifest.webhooks?.headers ?? []);
   let inFlight = 0;
@@ -467,10 +489,8 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     if (!METHODS.has(method))
       return Promise.resolve(nothing(refuseDelivery(url, method, 'refused: not an HTTP method')));
     if (target.protocol !== 'http:' || !tenantHost.test(target.hostname))
-      return Promise.resolve(
-        nothing(refuseDelivery(url, method, "refused: not a tenant's host in this world")),
-      );
-    if (target.pathname.startsWith('/_sandbox'))
+      return Promise.resolve(nothing(refuseDelivery(url, method, "refused: not this world's product")));
+    if (sandboxHooks(target.pathname))
       return Promise.resolve(
         nothing(refuseDelivery(url, method, "refused: the product's own sandbox hooks")),
       );
@@ -484,7 +504,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
         record({
           kind: 'deliver',
           operation: null,
-          tenant: target.hostname.split('.')[0]!,
+          tenant: target.hostname === options.baseDomain ? null : target.hostname.split('.')[0]!,
           method,
           target: plain(url, 500),
           status,

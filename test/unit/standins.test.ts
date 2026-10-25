@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { withJpegComment, withPngText } from '../../src/device/props.ts';
 import { assertNoStandins, isThisMachine, standInLeaks } from '../../src/standins/guard.ts';
 import { Manifest, matchPath, operationOf } from '../../src/standins/manifest.ts';
-import { ppidOfStat } from '../../src/standins/runner.ts';
+import { ppidOfStat, sandboxHooks } from '../../src/standins/runner.ts';
 import { hexId, makeCredential } from '../../src/standins/sdk.ts';
 
 const base = {
@@ -147,5 +147,23 @@ describe('a prop’s tag inside its file', () => {
     const typed = text.subarray(37, 41 + len);
     expect(text.readUInt32BE(41 + len)).toBe(zlib.crc32(typed));
     expect(text.subarray(41 + len + 4)).toEqual(png.subarray(33));
+  });
+});
+
+describe('a delivery to the product’s sandbox hooks', () => {
+  it('is caught however the path is spelled', () => {
+    for (const path of [
+      '/_sandbox/clock',
+      '/%5Fsandbox/clock',
+      '/%255Fsandbox/clock',
+      '//_sandbox/clock',
+      '/_SANDBOX/clock',
+      '/a/..%2F_sandbox/clock',
+      '/a%5C_sandbox',
+      '/%E0%A4%A',
+    ])
+      expect(sandboxHooks(path), path).toBe(true);
+    for (const path of ['/', '/hooks/resend', '/v1/accounts/AC1/messages', '/sandbox'])
+      expect(sandboxHooks(path), path).toBe(false);
   });
 });

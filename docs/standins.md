@@ -77,7 +77,8 @@ interface StandInManifest {
   };
   accounts: { fields: Record<string, 'id' | 'secret' | 'phone' | 'email' | 'text'> };
   behaviours: Behaviour[]; // which of the vocabulary it supports
-  webhooks?: { headers: string[] }; // what its webhooks may carry besides content-type, user-agent and accept
+  webhooks?: { headers: string[]; platform?: boolean }; // what its webhooks may carry besides content-type,
+  // user-agent and accept; platform: they may also go to the product's own host
   answers?: {
     // how its provider says "down" and "slow down", for the behaviours Swarmbox applies itself
     fail?: { status: number; headers?: Record<string, string>; body?: unknown };
@@ -213,8 +214,12 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
     - `requestTimeoutMs` (60 s by default) for a request, after which the product gets a 504.
   - When it exits, everything waiting on it is answered.
 - **It can deliver only to its world.**
-  - A webhook goes over plain HTTP to `<tenant>.<baseDomain>` on the world's port, and nowhere else.
-  - It can't reach the bare platform host, `localhost`, or the product's `/_sandbox` hooks.
+  - A webhook goes over plain HTTP to a tenant's host (`<tenant>.<baseDomain>`), on the world's port, and nowhere
+    else. A stand-in whose manifest sets `webhooks.platform` (one email account for the whole platform) may also
+    deliver to the product's own host, `<baseDomain>`.
+  - It can't reach `localhost`, an address, or the product's `/_sandbox` hooks. The path is decoded until it stops
+    changing and read without case, so `/%5Fsandbox`, `//_sandbox` and `/_SANDBOX` are refused too, as is any path
+    with `_sandbox` in it.
   - It can use only standard methods, and carry only `content-type`, `user-agent`, `accept` and the headers its
     manifest declares under `webhooks.headers` (its signature and timestamp). So no cookies and no forwarded
     addresses.
@@ -250,9 +255,11 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
 | Name     | Plays                  | What it covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `twilio` | Twilio, API 2010-04-01 | Texts with signed status callbacks (sent, then delivered or undelivered), refusals (21610), receipts by hand; a customer's text to the number's `smsUrl`; a call to its `voiceUrl` run through the product's TwiML (Dial, Say, Record, Reject, Hangup, each verb's `action` followed, and the next verb after a dial with none), answered at once and followed with the `call-status` inbound, answered, unanswered or busy, recorded, or held ringing until the caller hangs up, with its end posted to `voiceStatusUrl`; and the reads of calls, recordings (as MP3, at the stand-in's own address) and transcriptions. Voice Intelligence answers as not enabled. |
+| `email`  | Resend                 | `POST /emails` with its validation errors and Idempotency-Key, the `email.sent` then `email.delivered`, `email.bounced` or `email.complained` events to the account's `webhookUrl`, signed with Svix on the world's time; refusals and events by hand; and a mailbox read (inbound `mailbox`) of what one address was sent, so a sign-in code can be read.                                                                                                                                                                                                                                                                                                           |
 
 A product lists them with `builtinStandIn('twilio')` in `Product.standins`, and gives each tenant's account its console
-settings: `account(tenant, {smsUrl, voiceUrl, voiceStatusUrl})`.
+settings: `account(tenant, {smsUrl, voiceUrl, voiceStatusUrl})` for Twilio, `account(tenant, {webhookUrl})` for email. A
+product with one email account for everyone uses one tenant for it.
 
 ## Order of work
 
