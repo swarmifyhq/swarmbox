@@ -102,6 +102,7 @@ describe('the Twilio stand-in', () => {
       deliverTo: `http://127.0.0.1:${port}`,
       baseDomain: 'sample.test',
       sandbox: SANDBOX,
+      onStderr: (t) => process.stderr.write(t),
     });
     acct = await twilio.account('acme', {
       smsUrl: `${origin()}/hooks/sms`,
