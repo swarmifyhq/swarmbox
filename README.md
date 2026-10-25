@@ -26,6 +26,8 @@ Part of [Swarmify](https://github.com/swarmifyhq/swarmify). Private for now.
   screenshots, Playwright traces of every screen, your checks at the end, and one HTML report.
 - **A control room** at http://127.0.0.1:3100: every screen live, and take-over, during which the agent's
   actions on that screen are refused.
+- **The world's own log** (`world_log`), when the product shares it: the stack behind a screen's
+  "something went wrong", while the world runs.
 - **A daily budget** in browser-minutes and runs.
 
 ## Plugging a product in

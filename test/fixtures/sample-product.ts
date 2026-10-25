@@ -222,6 +222,8 @@ async function startSample(tenants: string[], port: number, closed: string[] = [
         };
       }),
     notes: () => ['a sample world', ...closed.map((t) => `${t} is closed for the season`)],
+    // Its server's log is the requests it served, with a line for each refusal.
+    log: ({ lines, match }) => requests.filter((l) => !match || match.test(l)).slice(-lines),
     stop: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
