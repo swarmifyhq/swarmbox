@@ -15,7 +15,11 @@ Part of [Swarmify](https://github.com/swarmifyhq/swarmify). Private for now.
 - **Worlds.** Each run starts your product the way it is deployed, with its own data, on tenant hosts that
   resolve only inside the browsers Swarmbox launches. Nothing is shared with other runs or with real data.
 - **People.** Everyone in the world, signed in without a password, each on their own screen; a tablet
-  app past its first screen; a customer at a link, with no sign-in at all.
+  app past its first screen; a customer at a link, with no sign-in at all. Any screen can be a phone, a
+  tablet either way up or a desktop, light or dark.
+- **Time.** Move a world's clock forward, and every screen follows; people stay signed in across the jump
+  (`renewSignIn`). A scenario can say when its day starts (`world.startsAt`: "09:00", or a date and time
+  in the tenant's zone, to test across a time change).
 - **Runs.** A scenario in plain words (what to try, what good looks like, who is on screen), findings with
   screenshots, Playwright traces of every screen, your checks at the end, and one HTML report.
 - **A control room** at http://127.0.0.1:3100: every screen live, and take-over, during which the agent's
@@ -39,6 +43,10 @@ claude mcp add --transport http swarmbox-myproduct http://127.0.0.1:3101/mcp
 ```
 
 `test/fixtures/sample-product.ts` is a complete product in about 200 lines.
+
+A product can take options of its own for a world (`worldOptions`, as zod fields): a tenant still
+migrating from another system, a feature switched on. `world_create` takes them as `options` and a
+scenario as `world.options`.
 
 ### Hooks
 

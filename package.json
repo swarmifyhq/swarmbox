@@ -1,6 +1,6 @@
 {
   "name": "@swarmifyhq/swarmbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A sandbox where AI agents run your product in real browsers against throwaway worlds: they see what is on each screen and what the server did, log findings, and end with checks and a report.",
   "type": "module",
   "packageManager": "pnpm@11.11.0",
