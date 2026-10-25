@@ -33,7 +33,10 @@ async function call(
 }
 
 beforeAll(async () => {
-  h = createHarness(sampleProduct({ scenarioDir, home: join(tmp, 'home') }), { headless: true });
+  h = createHarness(sampleProduct({ scenarioDir, home: join(tmp, 'home') }), {
+    headless: true,
+    standinSandbox: process.env.SWARMBOX_NO_SANDBOX === '1' ? 'off' : 'required',
+  });
   mcp = await serveMcp(h, 0);
   client = new Client({ name: 'test', version: '0' });
   await client.connect(new StreamableHTTPClientTransport(new URL(mcp.url)));
@@ -58,6 +61,50 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(people.text).toContain('north-ana  north  Ana (owner)');
     const tools = await client.listTools();
     expect(tools.tools.find((t) => t.name === 'world_list')!.description).toContain('shops');
+  });
+
+  it('talks to a stand-in as its provider, and the agent can make it misbehave', async () => {
+    const made = await call('world_create', { tenants: ['east'], standins: ['postbox'] });
+    expect(made.error, made.text).toBe(false);
+    const w = /^(w\d+)/.exec(made.text)![1]!;
+    expect(made.text).toMatch(/stand-ins: postbox \(Postbox\) at http:\/\/127\.0\.0\.1:\d+/);
+    expect((await call('standin_catalog')).text).toContain('"provider": "Postbox"');
+
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world: w, person: 'east-ana' })).text,
+    )![1]!;
+    const send = async () => {
+      await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Send estimate' } });
+      await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Send' } });
+    };
+    await send();
+    const world = h.world(w).world;
+    for (let i = 0; i < 40 && !world.receipts.length; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(world.receipts[0]).toMatch(/^east MessageSid=SM\d+&MessageStatus=delivered$/);
+    const log = (await call('standin_log', { world: w, standin: 'postbox' })).text;
+    expect(log).toContain('Data from the postbox stand-in');
+    expect(log).toContain('"operation": "messages.create"');
+    expect(log).toContain('"tenant": "east"');
+
+    const failed = await call('standin_behave', {
+      world: w,
+      standin: 'postbox',
+      behaviour: 'fail',
+      count: 1,
+    });
+    expect(failed.text).toContain('applied by Swarmbox in front of it');
+    await send();
+    for (let i = 0; i < 40; i++) {
+      if ((await call('standin_log', { world: w, standin: 'postbox' })).text.includes('"behaviour": "fail"'))
+        break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect((await call('standin_log', { world: w, standin: 'postbox' })).text).toContain(
+      '"behaviour": "fail"',
+    );
+    const nope = await call('standin_behave', { world: w, standin: 'postbox', behaviour: 'decline' });
+    expect(nope.text).toContain('doesn\'t support "decline"');
+    await call('world_destroy', { world: w });
   });
 
   it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {

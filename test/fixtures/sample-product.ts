@@ -5,10 +5,11 @@
 
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { hooksFor, type Hooks } from '../../src/hooks.ts';
 import type { CheckResult, Settled } from '../../src/checks.ts';
-import type { Persona, Product, ProductWorld, SignIn } from '../../src/product.ts';
+import type { Persona, Product, ProductWorld, SignIn, StandInEndpoint } from '../../src/product.ts';
 
 export const BASE_DOMAIN = 'sample.test';
 const TOKEN = 't'.repeat(43);
@@ -72,9 +73,20 @@ interface Row {
 export interface SampleWorld extends ProductWorld {
   /** Every request a tenant's host got, for assertions. */
   requests: string[];
+  /** The postbox stand-in's receipts this world's shops got, as "<shop> <body>". */
+  receipts: string[];
 }
 
-async function startSample(tenants: string[], port: number, closed: string[] = []): Promise<SampleWorld> {
+async function startSample(
+  tenants: string[],
+  port: number,
+  closed: string[] = [],
+  texts?: StandInEndpoint,
+): Promise<SampleWorld> {
+  // With the postbox stand-in, each shop has its own account there, and texts really go through it.
+  const textAccounts = new Map<string, Record<string, string>>();
+  if (texts) for (const t of tenants) textAccounts.set(t, await texts.account(t));
+  const receipts: string[] = [];
   const feeds = new Map<string, Row[]>(tenants.map((t) => [t, []]));
   const inbox: Row[] = [];
   let seq = 0;
@@ -140,6 +152,10 @@ async function startSample(tenants: string[], port: number, closed: string[] = [
         return res
           .writeHead(200, { 'content-type': 'text/html' })
           .end('<title>Estimate</title><h1>Your estimate</h1>');
+      if (url.pathname === '/hooks/postbox' && req.method === 'POST') {
+        receipts.push(`${tenant} ${body}`);
+        return res.writeHead(204).end();
+      }
       if (url.pathname === '/api/send' && req.method === 'POST') {
         if (!who) return json(401, { error: { code: 'signed_out', message: 'Sign in first.' } });
         push(tenant, {
@@ -169,6 +185,23 @@ async function startSample(tenants: string[], port: number, closed: string[] = [
           to: body,
           body: 'Your estimate',
         });
+        const acct = textAccounts.get(tenant);
+        if (texts && acct) {
+          // The product's own client, pointed at the stand-in: the real provider's API, with its receipts to come
+          // to this shop's own host.
+          void fetch(`${texts.baseUrls.api}/v1/accounts/${acct.account}/messages`, {
+            method: 'POST',
+            headers: {
+              authorization: `Basic ${Buffer.from(`${acct.account}:${acct.secret}`).toString('base64')}`,
+              'content-type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+              To: body,
+              Body: 'Your estimate',
+              StatusCallback: `http://${tenant}.${BASE_DOMAIN}:${actual}/hooks/postbox`,
+            }),
+          });
+        }
         return json(200, { ok: true });
       }
       if (!who)
@@ -189,6 +222,7 @@ async function startSample(tenants: string[], port: number, closed: string[] = [
     provenance: { commit: 'a'.repeat(40), dirty: false, base: 'origin/main', behind: 0, fetchedAt: null },
     hooks,
     requests,
+    receipts,
     people: async () => tenants.flatMap(PEOPLE),
     signIn: async (p, app): Promise<SignIn> =>
       app === 'tech'
@@ -243,7 +277,11 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         spec.tenants.length ? spec.tenants : ['demo-shop'],
         port,
         (spec.options?.closed as string[] | undefined) ?? [],
+        spec.endpoints?.postbox,
       ),
+    baseDomain: BASE_DOMAIN,
+    // Only in a world that asks for it, so the other tests start no stand-in.
+    standins: [{ name: 'postbox', dir: join(import.meta.dirname, 'standins/postbox'), always: false }],
     worldOptions: { closed: z.array(z.string()).optional().describe('Shops closed for the season') },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };

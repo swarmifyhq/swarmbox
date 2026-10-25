@@ -41,6 +41,24 @@ export interface WorldSpec {
   keep?: string;
   /** The product's own options for this world (Product.worldOptions), already checked against them. */
   options?: Record<string, unknown>;
+  /** Stand-ins for this world beyond the product's own (Product.standins), by name. */
+  standins?: string[];
+}
+
+/** One stand-in in a world, as the product sees it when the world starts (docs/standins.md). */
+export interface StandInEndpoint {
+  /** The stand-in's base addresses by the manifest's names: point the product's real client at these. */
+  baseUrls: Record<string, string>;
+  /** A provider account for one tenant: credentials the product provisions that tenant with, all marked fake. */
+  account(tenant: string): Promise<Record<string, string>>;
+}
+
+/** Where a stand-in comes from: its folder holds manifest.json and its entry module. */
+export interface StandInSource {
+  name: string;
+  dir: string;
+  /** Started in every world (the default); false: only when a world or scenario asks for it. */
+  always?: boolean;
 }
 
 /** A cookie the browser starts with, for the tenant's own origin. */
@@ -151,7 +169,21 @@ export interface Product<W extends ProductWorld = ProductWorld> {
   scenarioDir: string;
   /** Where runs and the budget ledger are kept. */
   home: string;
-  startWorld(spec: WorldSpec, port: number): Promise<W>;
+  /**
+   * Start a world. When the product or the world asks for stand-ins, they are already running, pointed at `port`,
+   * and `standins` has each one's addresses and accounts.
+   */
+  startWorld(
+    spec: WorldSpec & { standins?: string[]; endpoints?: Record<string, StandInEndpoint> },
+    port: number,
+  ): Promise<W>;
+  /**
+   * The stand-ins this product's worlds talk to instead of its real providers, and where each is. A world's spec
+   * can ask for more, from the same list. Needs a fixed `baseDomain`, so stand-ins know a tenant's host.
+   */
+  standins?: StandInSource[];
+  /** Tenants' hosts are `<tenant>.<baseDomain>`, known before a world starts: needed for stand-ins. */
+  baseDomain?: string;
   /**
    * Options of the product's own for a world, as zod fields with descriptions: a tenant still migrating
    * from another system, a feature switched on. world_create and a scenario's world.options take them.

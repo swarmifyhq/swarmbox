@@ -35,6 +35,8 @@ export const Scenario = z.strictObject({
       startsAt: z.string().regex(STARTS_AT, '"HH:MM" or "YYYY-MM-DD HH:MM"').optional(),
       /** The product's own world options (what world_create's options take), checked when the run starts. */
       options: z.record(z.string(), z.unknown()).optional(),
+      /** Stand-ins beyond the product's own, by name (docs/standins.md). */
+      standins: z.array(Slug).max(20).optional(),
     })
     .default({ seed: true }),
   /** Who is on a screen: a role each, the first person holding it (a second of the same role, the second). */

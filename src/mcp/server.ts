@@ -14,6 +14,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { failing, formatReport } from '../checks.ts';
 import { DEVICES, type Device } from '../fleet/browser.ts';
+import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { HarnessError, type Action, type Harness } from '../harness.ts';
 import type { ProductWorld } from '../product.ts';
@@ -41,6 +42,11 @@ function describeWorld<W extends ProductWorld>(h: Harness<W>, id: string): strin
     ...(w.world.notes?.() ?? []).map((n) => `  ${n}`),
     ...w.world.tenants.map((t) => `  ${t}: ${w.world.origin(t)}`),
     `  screens: ${open.map((s) => `${s.id} ${s.persona.label} [${s.controller}]`).join('; ') || 'none'}`,
+    ...(w.standins.size
+      ? [
+          `  stand-ins: ${[...w.standins.values()].map((s) => `${s.manifest.name} (${s.manifest.provider}) at ${s.origin}`).join('; ')}`,
+        ]
+      : []),
   ].join('\n');
 }
 
@@ -75,6 +81,14 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               'time it comes back with its data on the code as it is now, as a redeploy does. tenants and seed ' +
               'apply only the first time.',
           ),
+        ...(product.standins?.length
+          ? {
+              standins: z
+                .array(z.enum(product.standins.map((x) => x.name) as [string, ...string[]]))
+                .optional()
+                .describe('Stand-ins beyond the ones the product always uses (standin_catalog)'),
+            }
+          : {}),
         ...(product.worldOptions
           ? {
               options: z
@@ -85,13 +99,14 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
           : {}),
       },
     },
-    async ({ tenants, seed, keep, options }) =>
+    async ({ tenants, seed, keep, options, standins }) =>
       guard(async () => {
         const w = await h.createWorld({
           ...(tenants ? { tenants } : {}),
           ...(seed === undefined ? {} : { seed }),
           ...(keep ? { keep } : {}),
           ...(options ? { options: options as Record<string, unknown> } : {}),
+          ...(standins?.length ? { standins } : {}),
         });
         return text(describeWorld(h, w.id));
       }),
@@ -802,6 +817,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
   );
 
   product.tools?.(server, { harness: h, guard });
+  registerStandInTools(server, h, guard);
   return server;
 }
 
