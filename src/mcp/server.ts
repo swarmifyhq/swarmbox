@@ -14,6 +14,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { failing, formatReport } from '../checks.ts';
 import { DEVICES, type Device } from '../fleet/browser.ts';
+import { registerDeviceTools } from './device.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { HarnessError, type Action, type Harness } from '../harness.ts';
@@ -825,6 +826,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
 
   product.tools?.(server, { harness: h, guard });
   registerStandInTools(server, h, guard);
+  registerDeviceTools(server, h, guard);
   return server;
 }
 

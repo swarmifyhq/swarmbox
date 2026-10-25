@@ -9,6 +9,7 @@
 // refused. Reads are still allowed, because watching what the person does is useful to the agent.
 
 import net from 'node:net';
+import { join } from 'node:path';
 import type {
   CDPSession,
   Locator,
@@ -39,6 +40,14 @@ import {
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
+import {
+  setLocation,
+  setNotifications,
+  setUpDevice,
+  showOnCamera,
+  type DeviceState,
+} from './device/device.ts';
+import { propMaker, type Prop, type PropKind } from './device/props.ts';
 
 export type Controller = 'agent' | 'person';
 
@@ -81,6 +90,8 @@ export interface ScreenEntry {
   network: NetworkMode;
   /** Cut off every request the screen's network is holding (a stall), as a dropped connection does. */
   releaseStalled(): void;
+  /** Its camera and the files queued for its file choosers. */
+  device: DeviceState;
 }
 
 /**
@@ -91,7 +102,8 @@ export interface ScreenEntry {
 export interface Signal {
   at: string;
   screen: string;
-  kind: 'console-error' | 'page-error' | 'server-error' | 'request-failed';
+  /** device: something the device couldn't do for the app, e.g. a file chooser with nothing put in it. */
+  kind: 'console-error' | 'page-error' | 'server-error' | 'request-failed' | 'device';
   text: string;
   url?: string;
 }
@@ -226,6 +238,15 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
   check(worldId: string): Promise<{ settled: Record<string, Settled>; results: CheckResult[] }>;
   /** The world's hooks, or a refusal saying why there are none. */
   hooks(worldId: string): Promise<Hooks>;
+  /** Make a prop: a photo, a document or a signature, tagged with its id. */
+  makeProp(kind: PropKind, about: string): Promise<Prop>;
+  props(): Prop[];
+  /** Queue a prop for the screen's next file chooser (a camera button on a phone or tablet is one). */
+  pickFile(screenId: string, propId: string): Prop;
+  /** Put a prop in front of the screen's camera; null for nothing. */
+  showCamera(screenId: string, propId: string | null): Promise<void>;
+  setLocation(screenId: string, latitude: number, longitude: number): Promise<void>;
+  setNotifications(screenId: string, allow: boolean): Promise<void>;
   shutdown(): Promise<void>;
 }
 
@@ -630,12 +651,14 @@ export function createHarness<W extends ProductWorld>(
       const now = await w.world.hooks.clock();
       w.clock = { at: now.process.at, paused: now.clock.frozenAt !== null };
     }
+    const device: DeviceState = { files: [], camera: null, cameraVersion: 0 };
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
       ...(w.clock ? { clock: w.clock } : {}),
       ...(options.address ? { address: options.address } : {}),
       ...(options.device ? { device: options.device } : {}),
       ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
-      onContext: (ctx) => {
+      onContext: async (ctx) => {
+        await setUpDevice(ctx, device, (t) => signal('device', t));
         ctx.on('console', (m) => {
           // A 4xx is the server refusing something, which the app handles and shows (a conflict, a
           // validation error); Chrome logs each as a console error regardless. 5xx are server-error below.
@@ -690,6 +713,7 @@ export function createHarness<W extends ProductWorld>(
       watchers: new Set(),
       signals,
       network: { mode: 'online' },
+      device,
       releaseStalled: () => {
         for (const route of stalled) {
           deliberate.add(route.request());
@@ -724,6 +748,9 @@ export function createHarness<W extends ProductWorld>(
     await screen.page.waitForTimeout(SETTLE_MS);
     return made;
   }
+
+  // Props are kept with the product's runs, so a report can link the files a run used.
+  const props = propMaker(join(product.home, 'props'));
 
   const harness: Harness<W> = {
     product,
@@ -1031,6 +1058,25 @@ export function createHarness<W extends ProductWorld>(
       return state;
     },
 
+    makeProp: (kind, about) => props.make(kind, about),
+    props: () => props.list(),
+    pickFile(screenId, propId) {
+      const s = getScreen(screenId);
+      const prop = props.get(propId);
+      s.device.files.push(prop);
+      return prop;
+    },
+    async showCamera(screenId, propId) {
+      const s = getScreen(screenId);
+      showOnCamera(s.device, propId ? props.get(propId) : null);
+    },
+    async setLocation(screenId, latitude, longitude) {
+      await setLocation(getScreen(screenId).screen.context, latitude, longitude);
+    },
+    async setNotifications(screenId, allow) {
+      await setNotifications(getScreen(screenId).screen.context, allow);
+    },
+
     async shutdown() {
       for (const w of [...worlds.values()]) {
         worlds.delete(w.id);
@@ -1039,6 +1085,7 @@ export function createHarness<W extends ProductWorld>(
           process.stderr.write(`swarmbox: stopping world ${w.id} failed: ${(e as Error).message}\n`),
         );
       }
+      await props.close();
       await product.shutdown?.();
     },
   };

@@ -96,7 +96,7 @@ export interface Fleet {
     options?: Appearance & {
       address?: string;
       /** Called with the new context before it loads anything, so nothing it does is missed. */
-      onContext?: (context: BrowserContext) => void;
+      onContext?: (context: BrowserContext) => void | Promise<void>;
       /** The world's time, when its clock has moved: the page starts on it, not on this machine's. */
       clock?: { at: string; paused: boolean };
     },
@@ -201,9 +201,10 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
-      onContext?.(context);
       let page: Page;
       try {
+        // The screen's own set-up (its device): inside, so a failure there closes the half-made context too.
+        await onContext?.(context);
         // Before the first page: an app that reads "today" as it starts would otherwise draw this machine's
         // date, or the epoch, until something made it look again.
         if (clock) {

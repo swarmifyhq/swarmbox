@@ -41,7 +41,12 @@ const page = (
 ) => `<!doctype html><html><head><title>${tenant}</title></head><body>
 <main><h1>Jobs at ${tenant}</h1><p>Signed in as ${who}</p>
 <button type="button" id="open">Send estimate</button>
-<p role="status" id="status"></p></main>
+<p role="status" id="status"></p>
+<button type="button" id="photo-btn">Add a photo</button>
+<input type="file" id="photo" accept="image/*" capture="environment" hidden>
+<button type="button" id="cam">Use the camera</button>
+<button type="button" id="where">Where am I</button>
+<p id="device" aria-label="Device"></p></main>
 <dialog id="d" aria-labelledby="t"><h2 id="t">Send estimate E-1</h2>
   <label>To <input name="to" value="+15550100"></label>
   <button type="button" id="cancel">Cancel</button><button type="button" id="send">Send</button></dialog>
@@ -51,6 +56,34 @@ const page = (
   const d = document.getElementById('d');
   document.getElementById('open').onclick = () => d.showModal();
   document.getElementById('cancel').onclick = () => d.close();
+  // As a tablet app's camera button does: a file input with capture, clicked for the person.
+  const photo = document.getElementById('photo');
+  const device = document.getElementById('device');
+  document.getElementById('photo-btn').onclick = () => photo.click();
+  photo.onchange = async () => {
+    const f = photo.files[0];
+    await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+    device.textContent = 'Uploaded ' + f.name;
+  };
+  document.getElementById('cam').onclick = async () => {
+    const v = document.createElement('video');
+    v.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
+    v.muted = true;
+    await v.play();
+    await new Promise((r) => setTimeout(r, 400));
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 48;
+    const x = c.getContext('2d');
+    x.drawImage(v, 0, 0, 64, 48);
+    const d = x.getImageData(5, 5, 1, 1).data;
+    device.textContent = 'Camera sees rgb(' + d[0] + ',' + d[1] + ',' + d[2] + ')';
+  };
+  document.getElementById('where').onclick = () =>
+    navigator.geolocation.getCurrentPosition(
+      (p) => (device.textContent = 'At ' + p.coords.latitude.toFixed(3) + ',' + p.coords.longitude.toFixed(3)),
+      (e) => (device.textContent = 'No location: ' + e.message),
+    );
   document.getElementById('send').onclick = async () => {
     const r = await fetch('/api/send', { method: 'POST', body: d.querySelector('input').value });
     d.close();
@@ -75,6 +108,8 @@ export interface SampleWorld extends ProductWorld {
   requests: string[];
   /** The postbox stand-in's receipts this world's shops got, as "<shop> <body>". */
   receipts: string[];
+  /** Files people uploaded, as received. */
+  uploads: { tenant: string; name: string; body: Buffer }[];
 }
 
 async function startSample(
@@ -88,6 +123,7 @@ async function startSample(
   const textAccounts = new Map<string, Record<string, string>>();
   if (texts) for (const t of tenants) textAccounts.set(t, await texts.account(t));
   const receipts: string[] = [];
+  const uploads: { tenant: string; name: string; body: Buffer }[] = [];
   const feeds = new Map<string, Row[]>(tenants.map((t) => [t, []]));
   const inbox: Row[] = [];
   let seq = 0;
@@ -99,9 +135,11 @@ async function startSample(
     feeds.get(tenant)!.push({ ...row, cursor: String(++seq), at: new Date().toISOString() });
 
   const server = http.createServer((req, res) => {
-    let body = '';
-    req.on('data', (d: Buffer) => (body += d.toString()));
+    const chunks: Buffer[] = [];
+    req.on('data', (d: Buffer) => chunks.push(d));
     req.on('end', () => {
+      const raw = Buffer.concat(chunks);
+      const body = raw.toString();
       const host = (req.headers.host ?? '').split(':')[0]!;
       const url = new URL(req.url ?? '/', 'http://x');
       const json = (status: number, v: unknown) =>
@@ -153,6 +191,10 @@ async function startSample(
         return res
           .writeHead(200, { 'content-type': 'text/html' })
           .end('<title>Estimate</title><h1>Your estimate</h1>');
+      if (url.pathname === '/api/upload' && req.method === 'POST') {
+        uploads.push({ tenant, name: url.searchParams.get('name') ?? '', body: raw });
+        return json(200, { ok: true });
+      }
       if (url.pathname === '/hooks/postbox' && req.method === 'POST') {
         receipts.push(`${tenant} ${body}`);
         return res.writeHead(204).end();
@@ -224,6 +266,7 @@ async function startSample(
     hooks,
     requests,
     receipts,
+    uploads,
     people: async () => tenants.flatMap(PEOPLE),
     signIn: async (p, app): Promise<SignIn> =>
       app === 'tech'
