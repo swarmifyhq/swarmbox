@@ -20,6 +20,8 @@ const RECEIPT_KEPT_MS = 24 * 60 * 60_000;
 /** What is kept, oldest dropped first. */
 const TICKETS_KEPT = 5000;
 const RECEIVED_KEPT = 200;
+/** Devices a world may register: far more than a run uses, few enough that a loop can't fill the machine. */
+const DEVICES_KEPT = 1000;
 
 interface Device {
   token: string;
@@ -199,6 +201,7 @@ defineStandIn({
       const name = String(body.device ?? '').slice(0, 80) || 'a device';
       // Expo's own shape, with the mark: ExponentPushToken[...].
       const token = `ExponentPushToken[swarmbox${randomBytes(7).toString('hex')}]`;
+      if (devices.size >= DEVICES_KEPT) throw new Error(`at most ${DEVICES_KEPT} devices in a world`);
       devices.set(token, { token, tenant, name, gone: false, received: [] });
       return { token, device: name };
     },
