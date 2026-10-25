@@ -5,7 +5,9 @@
   "surfaces": ["pages"],
   "operations": [
     { "name": "go", "method": "GET", "path": "/go" },
-    { "name": "landed", "method": "GET", "path": "/landed" }
+    { "name": "landed", "method": "GET", "path": "/landed" },
+    { "name": "corsAsk", "method": "OPTIONS", "path": "/cors" },
+    { "name": "corsPut", "method": "PUT", "path": "/cors" }
   ],
   "connect": { "baseUrls": { "api": "/" }, "browser": { "origins": ["https://pay.example.org"] } },
   "accounts": { "fields": { "key": "secret" } },

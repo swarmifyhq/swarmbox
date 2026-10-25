@@ -12,5 +12,19 @@ defineStandIn({
       headers: { 'content-type': 'text/html' },
       body: '<p id="landed">landed</p>',
     }),
+    // A browser's upload straight to a stand-in (as to S3's presigned address): its preflight, then the put.
+    corsAsk: (req) => ({
+      status: 204,
+      headers: {
+        'access-control-allow-origin': req.headers.origin ?? '*',
+        'access-control-allow-methods': 'PUT',
+        'access-control-allow-headers': 'x-upload',
+      },
+    }),
+    corsPut: (req) => ({
+      status: 200,
+      headers: { 'access-control-allow-origin': req.headers.origin ?? '*', 'content-type': 'text/plain' },
+      body: `stored ${req.body.length}`,
+    }),
   },
 });

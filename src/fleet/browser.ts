@@ -59,6 +59,12 @@ export interface FleetOptions {
    * world's hosts, the routed origins and these; every other request and WebSocket is blocked.
    */
   allowOrigins?: string[];
+  /**
+   * The world's stand-ins' own addresses (http://127.0.0.1:<port>): reachable from its browsers (a presigned
+   * upload goes straight to S3's), but when its browsers play a provider's pages, only through the same checked
+   * proxy as the routed origins, so a stand-in can't bounce the browser out with a redirect of its own.
+   */
+  standins?: string[];
 }
 
 /** What a page a stand-in plays may load and talk to: its own origin, nothing else. */
@@ -74,9 +80,11 @@ const ROUTED_HOPS = 5;
  * are never left to the browser where the browser would leave the world, because Playwright routes only the first
  * URL of a navigation, not the hops after it:
  * - out of the world: refused here, with a 502;
- * - to a routed origin (the browser would go to the real provider): a navigation is sent on afresh, so it is
- *   routed; anything else (a fetch, an image) is followed here, each hop checked;
- * - to the world's own hosts, a stand-in or what the product loads from outside: the browser follows it.
+ * - to a routed origin (the browser would go to the real provider) or a stand-in's own address (the browser would
+ *   skip this proxy): a navigation is sent on afresh, so it is routed; anything else (a fetch, an image) is
+ *   followed here, each hop checked;
+ * - to the world's own hosts or what the product loads from outside: the browser follows it. The product is
+ *   trusted: an open redirect of its own is a way out a stand-in could use, so a product shouldn't have one.
  */
 async function answerRouted(route: Route, options: FleetOptions): Promise<void> {
   const req = route.request();
@@ -97,7 +105,10 @@ async function answerRouted(route: Route, options: FleetOptions): Promise<void> 
       body: `Swarmbox refused ${what}.`,
     });
   for (let hop = 0; ; hop++) {
-    const to = routes.find((x) => x.origin === url.origin)!.to;
+    // A routed origin is answered by its stand-in; a stand-in's own address, by itself.
+    const to = routes.find((x) => x.origin === url.origin)?.to ?? url.origin;
+    if (to === url.origin && !(options.standins ?? []).includes(url.origin))
+      return refuse('a request outside the world');
     const res = await fetch(`${to}${url.pathname}${url.search}`, {
       method,
       headers,
@@ -113,7 +124,7 @@ async function answerRouted(route: Route, options: FleetOptions): Promise<void> 
         // not a URL: refused below
       }
       if (!next || !insideWorld(next.href, options)) return refuse('a redirect out of the world');
-      if (routes.some((x) => x.origin === next.origin)) {
+      if (routes.some((x) => x.origin === next.origin) || (options.standins ?? []).includes(next.origin)) {
         if (req.isNavigationRequest())
           return route.fulfill({
             status: 200,
@@ -161,6 +172,7 @@ export function insideWorld(url: string, options: FleetOptions): boolean {
   return (
     world ||
     (options.routes ?? []).some((r) => r.origin === origin) ||
+    (options.standins ?? []).includes(origin) ||
     (options.allowOrigins ?? []).some((o) => {
       try {
         return new URL(o).origin === origin;
@@ -335,10 +347,15 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
           (ws) => ws.close({ code: 1008, reason: 'outside the world' }),
         );
       }
-      for (const r of options.routes ?? [])
-        // Matched by exact origin, never by a pattern a manifest could widen.
+      // Matched by exact origin, never by a pattern a manifest could widen. A contained world's stand-ins are
+      // reached through the same proxy, so every redirect any of them answers is checked.
+      const proxied = [
+        ...(options.routes ?? []).map((r) => r.origin),
+        ...(options.routes?.length ? (options.standins ?? []) : []),
+      ];
+      for (const o of proxied)
         await context.route(
-          (url) => url.origin === r.origin,
+          (url) => url.origin === o,
           (route) =>
             answerRouted(route, options).catch(() => route.abort('connectionrefused').catch(() => undefined)),
         );
