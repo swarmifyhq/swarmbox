@@ -249,9 +249,9 @@ describe('a stand-in a product talks to as its provider', () => {
     await expect(
       s.inbound('reply', { tenant: 'north', from: '+1', body: 'x', url: 'https://example.com/steal' }),
     ).resolves.toEqual({ delivered: 0 });
-    expect(
-      s.log().some((e) => e.kind === 'refused' && e.sent === "refused: not a tenant's host in this world"),
-    ).toBe(true);
+    expect(s.log().some((e) => e.kind === 'refused' && e.sent === "refused: not this world's product")).toBe(
+      true,
+    );
     await expect(s.inbound('dispute', {})).rejects.toThrow(/has no inbound "dispute"/);
   });
 });
@@ -389,8 +389,14 @@ describe('a stand-in that misbehaves', () => {
       expect(hook.headers['x-forwarded-for']).toBeUndefined();
       expect(hook.headers['x-evil']).toBeUndefined();
       expect(hook.headers['content-type']).toBe('text/plain');
-      expect(hooks.slice(before)).toHaveLength(1);
-      expect(s.log().filter((e) => e.kind === 'refused')).toHaveLength(4);
+      expect(
+        hooks
+          .slice(before)
+          .map((h) => h.path)
+          .sort(),
+      ).toEqual(['/', '/headers']);
+      // The bare base domain is the product's own host, and gets the one with no path to speak of.
+      expect(s.log().filter((e) => e.kind === 'refused')).toHaveLength(3);
 
       // Its words reach Swarmbox's callers as plain text: one line, no markup.
       const refusal = await s.clearRules().then(

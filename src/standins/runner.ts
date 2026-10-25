@@ -413,8 +413,10 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
 
   // Deliveries: to a tenant's host on the world's product only; the stand-in picks the path and its declared headers.
   const world = new URL(options.deliverTo);
+  // A tenant's host, or the product's own (the bare base domain: where a platform-wide webhook, one email account's,
+  // goes). Never localhost or an address: the product's sandbox hooks answer only there, and are refused by path too.
   const tenantHost = new RegExp(
-    `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.${options.baseDomain.replace(/\./g, '\\.')}$`,
+    `^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)?${options.baseDomain.replace(/\./g, '\\.')}$`,
   );
   const declared = new Set(manifest.webhooks?.headers ?? []);
   let inFlight = 0;
@@ -467,9 +469,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     if (!METHODS.has(method))
       return Promise.resolve(nothing(refuseDelivery(url, method, 'refused: not an HTTP method')));
     if (target.protocol !== 'http:' || !tenantHost.test(target.hostname))
-      return Promise.resolve(
-        nothing(refuseDelivery(url, method, "refused: not a tenant's host in this world")),
-      );
+      return Promise.resolve(nothing(refuseDelivery(url, method, "refused: not this world's product")));
     if (target.pathname.startsWith('/_sandbox'))
       return Promise.resolve(
         nothing(refuseDelivery(url, method, "refused: the product's own sandbox hooks")),
