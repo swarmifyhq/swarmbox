@@ -215,7 +215,8 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
   let stoppedWhy: string | null = null;
   const kill = (why: string) => {
     if (!stoppedWhy) stoppedWhy = why;
-    if (!child.pid) return;
+    // Already gone: its pid, and its group's, may belong to someone else by now (another world's stand-in).
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
     // Everything under it, as the system sees it now, then its group: what a stand-in started can't outlive it,
     // even one that left the group.
     for (const pid of descendants(child.pid)) {
@@ -475,6 +476,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
   );
 
   const cleanUp = async () => {
+    clearInterval(refusals);
     kill('stopped');
     await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
     rmSync(tmp, { recursive: true, force: true });
