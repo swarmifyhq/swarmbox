@@ -1,5 +1,6 @@
 {
   "name": "@swarmifyhq/swarmbox",
+  "license": "MIT",
   "version": "0.3.1",
   "description": "A sandbox where AI agents run your product in real browsers against throwaway worlds: they see what is on each screen and what the server did, log findings, and end with checks and a report.",
   "type": "module",
