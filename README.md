@@ -36,7 +36,7 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
 ## Install
 
 ```sh
-pnpm add -D @swarmifyhq/swarmbox playwright-core
+pnpm add -D swarmbox playwright-core
 pnpm exec playwright-core install chromium
 ```
 
@@ -48,7 +48,7 @@ A product is one object (`Product` in `src/product.ts`): how to start a world, w
 them signs in, and how to check the world afterwards. Then:
 
 ```ts
-import { serve } from '@swarmifyhq/swarmbox';
+import { serve } from 'swarmbox';
 import { myProduct } from './product.ts';
 
 await serve(myProduct());
@@ -69,7 +69,7 @@ scenario as `world.options`.
 A product that uses stand-ins calls the guard as it starts in production, before it builds any provider client:
 
 ```ts
-import { assertNoStandins } from '@swarmifyhq/swarmbox';
+import { assertNoStandins } from 'swarmbox';
 
 if (process.env.NODE_ENV === 'production') assertNoStandins(process.env, { allowLoopback: ['METRICS_URL'] });
 ```

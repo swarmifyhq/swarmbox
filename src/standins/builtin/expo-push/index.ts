@@ -9,6 +9,7 @@
 // installing the app would: the token goes to the product however its app sends it.
 
 import { randomBytes, randomUUID } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { defineStandIn, json, type Reply, type StandInContext, type StandInRequest } from '../../sdk.ts';
 import manifest from './manifest.json' with { type: 'json' };
 
@@ -19,7 +20,10 @@ const MESSAGE_BYTES = 4096;
 const RECEIPT_KEPT_MS = 24 * 60 * 60_000;
 /** What is kept, oldest dropped first. */
 const TICKETS_KEPT = 5000;
-const RECEIVED_KEPT = 200;
+// What a device got, newest kept: what the agent reads back (the last 20), so at most ~80 MB for a full world.
+const RECEIVED_KEPT = 20;
+/** The most a gzipped body may unpack to: 100 messages of 4 KB, with room. */
+const UNZIPPED_MAX = 1024 * 1024;
 /** Devices a world may register: far more than a run uses, few enough that a loop can't fill the machine. */
 const DEVICES_KEPT = 1000;
 
@@ -62,6 +66,12 @@ function deviceOf(body: Record<string, unknown>): Device {
   return d;
 }
 
+/** A request's JSON, gunzipped first when it says so: expo-server-sdk gzips any body over 1 KB. */
+function bodyOf<T>(req: StandInRequest): T {
+  if (!/\bgzip\b/i.test(req.headers['content-encoding'] ?? '')) return req.json<T>();
+  return JSON.parse(gunzipSync(req.body, { maxOutputLength: UNZIPPED_MAX }).toString('utf8')) as T;
+}
+
 /** The project a request may use: none named, or the one whose access token it carries. */
 function bearer(ctx: StandInContext, req: StandInRequest): { tenant: string | null } | { refused: Reply } {
   const auth = req.headers.authorization;
@@ -83,7 +93,7 @@ defineStandIn({
       if ('refused' in who) return who.refused;
       let body: unknown;
       try {
-        body = req.json<unknown>();
+        body = bodyOf<unknown>(req);
       } catch {
         return refused(400, 'VALIDATION_ERROR', 'The request body must be JSON.');
       }
@@ -108,6 +118,9 @@ defineStandIn({
           'All push notification messages in the same request must be for the same project.',
         );
       const [project] = [...projects] as (string | undefined)[];
+      // One project's access token never sends to another's tokens, locked or not.
+      if (project && who.tenant && who.tenant !== project)
+        return refused(401, 'UNAUTHORIZED', 'The access token does not belong to this project.');
       if (project && locked(ctx, project, who.tenant))
         return refused(
           401,
@@ -170,7 +183,7 @@ defineStandIn({
       if ('refused' in who) return who.refused;
       let ids: unknown;
       try {
-        ids = req.json<{ ids?: unknown }>().ids;
+        ids = bodyOf<{ ids?: unknown }>(req).ids;
       } catch {
         return refused(400, 'VALIDATION_ERROR', 'The request body must be JSON.');
       }
@@ -182,13 +195,16 @@ defineStandIn({
           'PUSH_TOO_MANY_RECEIPTS',
           `You are trying to get more than ${PER_READ} receipts in one request.`,
         );
+      // A locked project's receipts without its access token (or with another's) are refused, as Expo refuses them.
+      const asked = (ids as string[]).map((id) => tickets.get(id)).filter((t) => t !== undefined);
+      if (asked.some((t) => locked(ctx, t.tenant, who.tenant) || (who.tenant && who.tenant !== t.tenant)))
+        return refused(401, 'UNAUTHORIZED', 'These receipts need their project’s access token.');
       const now = ctx.now().getTime();
       const data: Record<string, Ticket['receipt']> = {};
       for (const id of ids as string[]) {
         const t = tickets.get(id);
-        // Not ready yet, a day old, or another locked project's: left out, as Expo leaves out what it hasn't got.
-        if (!t || t.ready > now || now - t.sent > RECEIPT_KEPT_MS || locked(ctx, t.tenant, who.tenant))
-          continue;
+        // Not ready yet, or a day old: left out, as Expo leaves out what it hasn't got.
+        if (!t || t.ready > now || now - t.sent > RECEIPT_KEPT_MS) continue;
         data[id] = t.receipt;
       }
       return json(200, { data });

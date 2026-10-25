@@ -2,8 +2,9 @@
 // calls it and takes its webhooks on a tenant's host, the general behaviours Swarmbox applies, the stand-in's own,
 // the log, inbound, the clock, and what a hostile stand-in can't do.
 
+import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
@@ -43,30 +44,29 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((r) => product.close(() => r())));
 
-/** Whether a process still runs: on Linux a killed one may linger as a zombie until something reaps it (in a CI
- * container, PID 1 often never does), and kill(pid, 0) still succeeds on a zombie, so read its state instead. */
-const running = (pid: number): boolean => {
-  if (process.platform === 'linux') {
-    let stat: string;
-    try {
-      stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    } catch {
-      return false;
-    }
-    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Whether a process carrying `marker` in its arguments still runs, seen from the host: a pid the stand-in reports
+ * from inside its sandbox is its own PID namespace's, which names another process (or none) out here. A killed one
+ * lingering as a zombie (a CI container's PID 1 may never reap it) has an empty command line, so it counts as gone.
+ */
+const runningWith = (marker: string): boolean => {
+  if (process.platform === 'linux')
+    return readdirSync('/proc')
+      .filter((p) => /^\d+$/.test(p))
+      .some((p) => {
+        try {
+          return readFileSync(`/proc/${p}/cmdline`, 'utf8').split('\0').includes(marker);
+        } catch {
+          return false;
+        }
+      });
+  return execFileSync('ps', ['-axo', 'command'], { encoding: 'utf8' }).includes(marker);
 };
 
-/** Whether a process is gone within two seconds: a SIGKILL lands at once, its exit a moment later. */
-const gone = async (pid: number) => {
+/** Whether it's gone within two seconds: a SIGKILL lands at once, its exit a moment later. */
+const gone = async (marker: string) => {
   for (let i = 0; i < 40; i++) {
-    if (!running(pid)) return true;
+    if (!runningWith(marker)) return true;
     await new Promise((r) => setTimeout(r, 50));
   }
   return false;
@@ -259,6 +259,7 @@ describe('a stand-in a product talks to as its provider', () => {
 describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
   it('can write its own folder and nothing else, and reach no network at all', async () => {
     let forked: number | undefined;
+    const marker = `swarmbox-fork-${process.pid}-${Date.now()}`;
     const secretDir = mkdtempSync(join(tmpdir(), 'swarmbox-secret-'));
     const secret = join(secretDir, 'key');
     writeFileSync(secret, 'not for stand-ins');
@@ -272,7 +273,7 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
     });
     try {
       const outside = join(secretDir, 'written');
-      const q = new URLSearchParams({ port: new URL(productUrl).port, secret, outside });
+      const q = new URLSearchParams({ port: new URL(productUrl).port, secret, outside, marker });
       const r = (await (await fetch(`${s.baseUrls.api}/probe?${q}`)).json()) as Record<string, unknown>;
       expect(r).toMatchObject({
         internet: 'blocked',
@@ -298,17 +299,17 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
         expect(reached).toBe(false);
       }
       forked = Number(r.forked ?? 0);
+      if (forked) expect(runningWith(marker)).toBe(true);
     } finally {
       delete process.env.SWARMBOX_CANARY;
       await s.stop();
       rmSync(secretDir, { recursive: true, force: true });
     }
-    // What it started went with it.
     // It couldn't start one (macOS), or what it started went with it.
     if (process.platform === 'darwin') expect(forked).toBe(0);
     else {
       expect(forked).toBeGreaterThan(0);
-      expect(await gone(forked!)).toBe(true);
+      expect(await gone(marker)).toBe(true);
     }
   });
 });
@@ -323,15 +324,18 @@ describe('a stand-in that misbehaves', () => {
       baseDomain: 'sample.test',
       sandbox: 'off',
     });
+    const marker = `swarmbox-fork-${process.pid}-${Date.now()}`;
     const q = new URLSearchParams({
       port: '9',
       secret: '/nonexistent',
       outside: join(tmpdir(), 'swarmbox-never'),
+      marker,
     });
     const r = (await (await fetch(`${s.baseUrls.api}/probe?${q}`)).json()) as { forked: number | null };
     expect(r.forked).toBeGreaterThan(0);
+    expect(runningWith(marker)).toBe(true);
     await s.stop();
-    expect(await gone(r.forked!)).toBe(true);
+    expect(await gone(marker)).toBe(true);
   });
 
   it('is given up on when it never says it is ready', async () => {
