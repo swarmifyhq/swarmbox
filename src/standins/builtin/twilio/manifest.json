@@ -107,6 +107,13 @@
       }
     },
     {
+      "kind": "call-status",
+      "label": "How a call is going, step by step",
+      "fields": {
+        "call": "The call sid"
+      }
+    },
+    {
       "kind": "hangup",
       "label": "The caller hangs up a call that is still ringing",
       "fields": {

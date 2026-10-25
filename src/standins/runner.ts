@@ -618,20 +618,6 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     rmSync(tmp, { recursive: true, force: true });
   };
 
-  send({ type: 'start', baseDomain: options.baseDomain, clock: options.clock ?? null, tmp });
-  const why = await Promise.race([
-    started.then(() => null),
-    exited.then(() => `it stopped before it was ready: ${stoppedWhy} (its stderr is on Swarmbox's console)`),
-    new Promise<string>((r) => {
-      const ms = options.readyTimeoutMs ?? READY_MS;
-      setTimeout(() => r(`it was not ready within ${ms / 1000} s`), ms).unref();
-    }),
-  ]);
-  if (why) {
-    await cleanUp();
-    throw new Error(`${manifest.name}: ${why}`);
-  }
-
   // The provider's port.
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
@@ -648,6 +634,24 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       });
     });
   });
+  // Listening before the stand-in starts, so it knows its own address (a recording's URL, a checkout's page).
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  send({ type: 'start', baseDomain: options.baseDomain, clock: options.clock ?? null, tmp, origin });
+  const why = await Promise.race([
+    started.then(() => null),
+    exited.then(() => `it stopped before it was ready: ${stoppedWhy} (its stderr is on Swarmbox's console)`),
+    new Promise<string>((r) => {
+      const ms = options.readyTimeoutMs ?? READY_MS;
+      setTimeout(() => r(`it was not ready within ${ms / 1000} s`), ms).unref();
+    }),
+  ]);
+  if (why) {
+    server.close();
+    await cleanUp();
+    throw new Error(`${manifest.name}: ${why}`);
+  }
+
   const handle = async (req: IncomingMessage, res: ServerResponse, body: Buffer) => {
     const url = new URL(req.url ?? '/', 'http://standin');
     const headers = Object.fromEntries(
@@ -757,8 +761,6 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       slow ? 'slow' : undefined,
     );
   };
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   return {
     manifest,

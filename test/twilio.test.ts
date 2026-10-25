@@ -5,6 +5,7 @@
 import { createHmac } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import twilioSdk from 'twilio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { builtinStandIn } from '../src/standins/builtin/index.ts';
 import { startStandIn, type StandIn } from '../src/standins/runner.ts';
@@ -33,7 +34,15 @@ beforeAll(async () => {
     req.on('end', () => {
       const params = new URLSearchParams(body);
       const url = `http://${req.headers.host}${req.url}`;
-      const valid = req.headers['x-twilio-signature'] === sign(token, url, params);
+      // Twice over: our own reading of Twilio's documentation, and Twilio's own library.
+      const valid =
+        req.headers['x-twilio-signature'] === sign(token, url, params) &&
+        twilioSdk.validateRequest(
+          token,
+          String(req.headers['x-twilio-signature']),
+          url,
+          Object.fromEntries(params),
+        );
       hooks.push({ path: req.url ?? '', params, valid });
       const twiml = (x: string) =>
         res
@@ -41,6 +50,9 @@ beforeAll(async () => {
           .end(`<?xml version="1.0"?><Response>${x}</Response>`);
       if (!valid) return res.writeHead(403).end();
       // As Flowology answers: ring a number and record; if nobody answers, voicemail; then goodbye.
+      // A number whose TwiML dials with no action: Twilio goes on to the next verb.
+      if (req.url === '/hooks/voice' && params.get('From') === '+12505550180')
+        return twiml('<Dial><Number>+12505550111</Number></Dial><Say>After the dial.</Say><Hangup/>');
       if (req.url === '/hooks/voice')
         return twiml(
           '<Dial timeout="20" answerOnBridge="true" action="/hooks/voice-dial?step=forward" method="POST" record="record-from-answer-dual"><Number>+12505550111</Number></Dial>',
@@ -61,6 +73,21 @@ beforeAll(async () => {
 afterAll(() => new Promise<void>((r) => product.close(() => r())));
 
 const origin = () => `http://acme.sample.test:${port}`;
+/** Start a call, then read it with call-status until it has ended, as an agent would. */
+const callThrough = async (twilio: StandIn, body: Record<string, string | number | boolean>) => {
+  const started = (await twilio.inbound('call', body)) as { call: string; status: string };
+  expect(started.status).toBe('ringing');
+  for (let i = 0; i < 200; i++) {
+    const s = (await twilio.inbound('call-status', { call: started.call })) as {
+      done: boolean;
+      status: string;
+      steps: string[];
+    };
+    if (s.done) return { call: started.call, status: s.status, steps: s.steps };
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`call ${started.call} never ended`);
+};
 const waitFor = async <T>(f: () => T | undefined, ms = 4000): Promise<T> => {
   const end = Date.now() + ms;
   for (;;) {
@@ -191,16 +218,7 @@ describe('the Twilio stand-in', () => {
   });
 
   it('runs a call through the product’s TwiML: nobody answers, so the caller leaves a message', async () => {
-    const r = (await twilio.inbound('call', {
-      tenant: 'acme',
-      from: '+12505550177',
-      ringMs: 0,
-      messageSec: 14,
-    })) as {
-      call: string;
-      status: string;
-      steps: string[];
-    };
+    const r = await callThrough(twilio, { tenant: 'acme', from: '+12505550177', ringMs: 0, messageSec: 14 });
     expect(r.status).toBe('completed');
     expect(r.steps).toEqual([
       'rang http://acme.sample.test:' + port + '/hooks/voice: 200',
@@ -216,6 +234,10 @@ describe('the Twilio stand-in', () => {
       hooks.filter((h) => h.params.get('CallSid') === r.call && h.path.startsWith(path));
     expect(of('/hooks/voice-dial')[0]!.params.get('DialCallStatus')).toBe('no-answer');
     expect(of('/hooks/voicemail')[0]!.params.get('RecordingDuration')).toBe('14');
+    // The recording's link is the stand-in's own: a product that fetches it stays in the world.
+    expect(of('/hooks/voicemail')[0]!.params.get('RecordingUrl')).toMatch(
+      new RegExp(`^${twilio.origin}/2010-04-01/`),
+    );
     expect(of('/hooks/voice-status')[0]!.params.get('CallStatus')).toBe('completed');
     expect(hooks.filter((h) => h.params.get('CallSid') === r.call).every((h) => h.valid)).toBe(true);
 
@@ -230,15 +252,13 @@ describe('the Twilio stand-in', () => {
   });
 
   it('records an answered call both ways, and lists it with its dialled leg', async () => {
-    const r = (await twilio.inbound('call', {
+    const r = await callThrough(twilio, {
       tenant: 'acme',
       from: '+12505550178',
       answer: 'answered',
       talkSec: 95,
       ringMs: 0,
-    })) as {
-      call: string;
-    };
+    });
     const dial = hooks.find(
       (h) => h.params.get('CallSid') === r.call && h.path.startsWith('/hooks/voice-dial'),
     )!;
@@ -258,6 +278,14 @@ describe('the Twilio stand-in', () => {
       },
     );
     expect(viaKey.status).toBe(200);
+  });
+
+  it('goes on to the next verb after a dial with no action, whatever its outcome', async () => {
+    for (const answer of ['answered', 'no-answer']) {
+      const r = await callThrough(twilio, { tenant: 'acme', from: '+12505550180', answer, ringMs: 0 });
+      expect(r.steps).toContain('say: After the dial.');
+      expect(r.steps).toContain('hung up');
+    }
   });
 
   it('keeps a call ringing until the caller hangs up, then cancels the dial', async () => {
