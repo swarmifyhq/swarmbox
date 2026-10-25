@@ -78,6 +78,8 @@ export const Manifest = z.strictObject({
   webhooks: z
     .strictObject({
       headers: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(20),
+      /** Its webhooks may also go to the product's own host (the bare base domain): one account for the whole platform. */
+      platform: z.boolean().optional(),
     })
     .optional(),
   inbound: z

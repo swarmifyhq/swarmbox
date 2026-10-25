@@ -40,6 +40,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         { url: 'http://127.0.0.1/_sandbox/clock', method: 'POST' },
         { url: 'http://sample.test/', method: 'POST' },
         { url: 'http://north.sample.test/_sandbox/fakes', method: 'POST' },
+        { url: 'http://north.sample.test/%5Fsandbox/clock', method: 'POST' },
+        { url: 'http://north.sample.test//_sandbox/clock', method: 'POST' },
+        { url: 'http://north.sample.test/_SANDBOX/clock', method: 'POST' },
+        { url: 'http://north.sample.test/a/..%2F_sandbox/clock', method: 'POST' },
         { url: 'http://north.sample.test/ok', method: 'BREW' },
         {
           url: 'http://north.sample.test/headers',

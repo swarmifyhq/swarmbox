@@ -115,10 +115,35 @@ describe('the email stand-in', () => {
       { 'idempotency-key': 'k1' },
     );
     expect(clash.status).toBe(409);
+    // Another account's same key is its own.
+    const other = await email.account('other');
+    const theirs = await fetch(`${email.baseUrls.api}/emails`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${other.apiKey}`,
+        'content-type': 'application/json',
+        'idempotency-key': 'k1',
+      },
+      body: JSON.stringify({
+        from: 'o@other.example',
+        to: ['kim@customer.example'],
+        subject: 'Hi',
+        text: 'Hi',
+      }),
+    });
+    expect(theirs.status).toBe(200);
+    expect(((await theirs.json()) as { id: string }).id).not.toBe(a.id);
   });
 
   it('refuses a bad address, bounces, or leaves the events to the agent', async () => {
     expect((await fetch(`${email.baseUrls.api}/emails`, { method: 'POST', body: '{}' })).status).toBe(401);
+    const wrong = await fetch(`${email.baseUrls.api}/emails`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer re_swarmbox_secret_nope' },
+      body: '{}',
+    });
+    expect(wrong.status).toBe(403);
+    expect(((await wrong.json()) as { name: string }).name).toBe('invalid_api_key');
     await email.behave({ behaviour: 'reject', count: 1, match: { target: 'nobody@nowhere' } });
     const bad = await send('nobody@nowhere');
     expect(bad.status).toBe(422);

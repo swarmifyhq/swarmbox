@@ -24,7 +24,7 @@
       "body": { "statusCode": 429, "name": "rate_limit_exceeded", "message": "Too many requests." }
     }
   },
-  "webhooks": { "headers": ["svix-id", "svix-timestamp", "svix-signature"] },
+  "webhooks": { "headers": ["svix-id", "svix-timestamp", "svix-signature"], "platform": true },
   "inbound": [
     {
       "kind": "event",

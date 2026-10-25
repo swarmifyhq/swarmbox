@@ -5,7 +5,7 @@
 // An account's console settings, as the product gives them (account(tenant, settings)): webhookUrl, the endpoint a
 // person would add in Resend's dashboard. A product with one account for everyone uses one tenant for it.
 
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { defineStandIn, json, type Reply, type StandInContext, type StandInRequest } from '../../sdk.ts';
 import manifest from './manifest.json' with { type: 'json' };
 
@@ -27,20 +27,32 @@ interface Email {
   attachments: { filename: string; bytes: number }[];
   created: Date;
   last: string;
+  /** Its Idempotency-Key in `keys`, so the key goes when the email does. */
+  key: string | null;
 }
 
+/** Emails kept, oldest dropped first, and the most of a text or HTML body kept (a run sends sign-in codes, not books). */
+const EMAILS_KEPT = 2000;
+const BODY_KEPT = 256 * 1024;
 const emails = new Map<string, Email>();
-/** Idempotency-Key, as Resend keeps it: the same key and body give the same email, a different body is refused. */
-const keys = new Map<string, { id: string; body: string }>();
+/**
+ * Idempotency-Key, as Resend keeps it, per account: the same key and body give the same email, a different body is
+ * refused. Keyed "<tenant> <key>", so two accounts' keys never meet.
+ */
+const keys = new Map<string, { id: string; body: string }>(); // body: the request body's sha-256
+const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+const keep = (text: string) => (text.length > BODY_KEPT ? text.slice(0, BODY_KEPT) : text);
 
 const err = (status: number, name: string, message: string): Reply =>
   json(status, { statusCode: status, name, message });
 
-function caller(ctx: StandInContext, req: StandInRequest): string | null {
+/** The account a request's key belongs to, or Resend's answer: 401 with no key, 403 with one it doesn't know. */
+function caller(ctx: StandInContext, req: StandInRequest): { tenant: string } | { refused: Reply } {
   const auth = req.headers.authorization ?? '';
-  if (!auth.startsWith('Bearer ')) return null;
-  for (const [tenant, a] of ctx.accounts) if (a.apiKey === auth.slice(7)) return tenant;
-  return null;
+  if (!auth.startsWith('Bearer ') || auth.length === 7)
+    return { refused: err(401, 'missing_api_key', 'Missing API key in the authorization header.') };
+  for (const [tenant, a] of ctx.accounts) if (a.apiKey === auth.slice(7)) return { tenant };
+  return { refused: err(403, 'invalid_api_key', 'API key is invalid.') };
 }
 
 async function event(
@@ -94,8 +106,9 @@ defineStandIn({
   },
   routes: {
     'emails.send': (req, ctx) => {
-      const tenant = caller(ctx, req);
-      if (!tenant) return err(401, 'missing_api_key', 'Missing API key in the authorization header.');
+      const who = caller(ctx, req);
+      if ('refused' in who) return who.refused;
+      const { tenant } = who;
       let b: Record<string, unknown>;
       try {
         b = req.json<Record<string, unknown>>();
@@ -112,11 +125,11 @@ defineStandIn({
       if (ctx.take('reject', { operation: 'emails.send', tenant, target: to[0] }))
         return err(422, 'validation_error', `Invalid \`to\` field. ${to[0]} is not a valid address.`);
 
-      const key = req.headers['idempotency-key'];
+      const key = req.headers['idempotency-key'] ? `${tenant} ${req.headers['idempotency-key']}` : null;
       const raw = req.text();
       if (key) {
         const seen = keys.get(key);
-        if (seen && seen.body === raw) return json(200, { id: seen.id });
+        if (seen && seen.body === hash(raw)) return json(200, { id: seen.id });
         if (seen)
           return err(
             409,
@@ -135,8 +148,8 @@ defineStandIn({
         from: b.from,
         to,
         subject: b.subject,
-        text: typeof b.text === 'string' ? b.text : '',
-        html: typeof b.html === 'string' ? b.html : null,
+        text: typeof b.text === 'string' ? keep(b.text) : '',
+        html: typeof b.html === 'string' ? keep(b.html) : null,
         replyTo: typeof b.reply_to === 'string' ? b.reply_to : null,
         tags,
         attachments: Array.isArray(b.attachments)
@@ -147,9 +160,15 @@ defineStandIn({
           : [],
         created: ctx.now(),
         last: 'email.sent',
+        key,
       };
       emails.set(e.id, e);
-      if (key) keys.set(key, { id: e.id, body: raw });
+      if (key) keys.set(key, { id: e.id, body: hash(raw) });
+      for (const old of emails.values()) {
+        if (emails.size <= EMAILS_KEPT) break;
+        emails.delete(old.id);
+        if (old.key) keys.delete(old.key);
+      }
       if (!ctx.take('manual', { tenant, target: to[0] })) {
         const bounce = ctx.take('bounce', { tenant, target: to[0] });
         void (async () => {
@@ -168,8 +187,9 @@ defineStandIn({
       return json(200, { id: e.id });
     },
     'emails.get': (req, ctx) => {
-      const tenant = caller(ctx, req);
-      if (!tenant) return err(401, 'missing_api_key', 'Missing API key in the authorization header.');
+      const who = caller(ctx, req);
+      if ('refused' in who) return who.refused;
+      const { tenant } = who;
       const e = emails.get(req.params.id!);
       if (!e || e.tenant !== tenant) return err(404, 'not_found', 'Email not found.');
       return json(200, {
