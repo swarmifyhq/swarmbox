@@ -1,0 +1,17 @@
+{
+  "name": "garbler",
+  "provider": "Garbler",
+  "apiVersion": "v1",
+  "surfaces": ["noise"],
+  "operations": [
+    { "name": "badStatus", "method": "GET", "path": "/bad-status" },
+    { "name": "badHeader", "method": "GET", "path": "/bad-header" },
+    { "name": "never", "method": "GET", "path": "/never" },
+    { "name": "deliverBad", "method": "POST", "path": "/deliver-bad" },
+    { "name": "ok", "method": "GET", "path": "/ok" }
+  ],
+  "connect": { "baseUrls": { "api": "/" } },
+  "accounts": { "fields": { "key": "secret" } },
+  "behaviours": ["fail"],
+  "clock": "real"
+}

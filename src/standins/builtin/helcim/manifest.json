@@ -1,0 +1,37 @@
+{
+  "name": "helcim",
+  "provider": "Helcim",
+  "apiVersion": "v2",
+  "surfaces": ["checkout", "saved-cards", "refunds"],
+  "operations": [
+    { "name": "checkout.initialize", "method": "POST", "path": "/v2/helcim-pay/initialize" },
+    { "name": "transactions.get", "method": "GET", "path": "/v2/card-transactions/:id" },
+    { "name": "transactions.list", "method": "GET", "path": "/v2/card-transactions" },
+    { "name": "customers.list", "method": "GET", "path": "/v2/customers" },
+    { "name": "cards.list", "method": "GET", "path": "/v2/customers/:customer/cards" },
+    { "name": "cards.delete", "method": "DELETE", "path": "/v2/customers/:customer/cards/:card" },
+    { "name": "payment.purchase", "method": "POST", "path": "/v2/payment/purchase" },
+    { "name": "payment.refund", "method": "POST", "path": "/v2/payment/refund" },
+    { "name": "browser.script", "method": "GET", "path": "/helcim-pay/services/start.js" },
+    { "name": "browser.checkout", "method": "GET", "path": "/helcim-pay/checkout/:token" },
+    { "name": "browser.pay", "method": "POST", "path": "/helcim-pay/checkout/:token/pay" }
+  ],
+  "connect": {
+    "baseUrls": { "api": "/v2" },
+    "browser": { "origins": ["https://secure.helcim.app"] }
+  },
+  "accounts": { "fields": { "apiToken": "secret" } },
+  "behaviours": ["fail", "hang", "slow", "limit", "decline", "timeout", "reject"],
+  "answers": {
+    "fail": { "status": 500, "body": { "errors": ["An unexpected error occurred"] } },
+    "limit": { "status": 429, "body": { "errors": ["Too many requests"] } }
+  },
+  "inbound": [
+    {
+      "kind": "expire",
+      "label": "A saved card expires",
+      "fields": { "cardToken": "The card token" }
+    }
+  ],
+  "clock": "world"
+}

@@ -1,0 +1,41 @@
+{
+  "name": "email",
+  "provider": "Resend",
+  "apiVersion": "2024-01",
+  "surfaces": ["email"],
+  "operations": [
+    { "name": "emails.send", "method": "POST", "path": "/emails" },
+    { "name": "emails.get", "method": "GET", "path": "/emails/:id" }
+  ],
+  "connect": { "baseUrls": { "api": "/" } },
+  "accounts": { "fields": { "apiKey": "secret", "webhookSecret": "secret" } },
+  "behaviours": ["fail", "hang", "slow", "limit", "reject", "bounce", "manual", "duplicate", "reorder"],
+  "answers": {
+    "fail": {
+      "status": 500,
+      "body": {
+        "statusCode": 500,
+        "name": "internal_server_error",
+        "message": "An unexpected error occurred."
+      }
+    },
+    "limit": {
+      "status": 429,
+      "body": { "statusCode": 429, "name": "rate_limit_exceeded", "message": "Too many requests." }
+    }
+  },
+  "webhooks": { "headers": ["svix-id", "svix-timestamp", "svix-signature"], "platform": true },
+  "inbound": [
+    {
+      "kind": "event",
+      "label": "An email's event, sent by hand (with manual)",
+      "fields": { "email": "The email id", "type": "delivered, bounced or complained" }
+    },
+    {
+      "kind": "mailbox",
+      "label": "What has been sent to one address, newest last",
+      "fields": { "to": "The address" }
+    }
+  ],
+  "clock": "world"
+}

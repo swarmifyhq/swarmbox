@@ -1,0 +1,73 @@
+{
+  "name": "swarmbox",
+  "license": "MIT",
+  "version": "0.11.0",
+  "description": "A sandbox where AI agents run your product in real browsers against throwaway worlds: they see what is on each screen and what the server did, log findings, and end with checks and a report.",
+  "type": "module",
+  "packageManager": "pnpm@11.11.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "swarmbox": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint --max-warnings 0 .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check",
+    "test": "vitest run test/unit",
+    "test:browser": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.79",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "playwright-core": "^1.63.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "3.1149.0",
+    "@eslint/js": "^10.0.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.0.0",
+    "playwright-core": "1.63.0",
+    "prettier": "^3.9.10",
+    "twilio": "6.1.2",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/swarmifyhq/swarmbox.git"
+  },
+  "homepage": "https://github.com/swarmifyhq/swarmbox#readme",
+  "bugs": "https://github.com/swarmifyhq/swarmbox/issues",
+  "keywords": [
+    "testing",
+    "e2e",
+    "ai-agents",
+    "mcp",
+    "playwright",
+    "sandbox",
+    "mock-server",
+    "webhooks"
+  ]
+}

@@ -1,0 +1,89 @@
+# Swarmbox CI on GitHub's own runners (DEC-004: the repo goes public, so a fork's pull request must never run on
+# a machine of ours). Kept light: vitest at two workers, the browser tests one file at a time, the pnpm store
+# cached between runs.
+#
+#   check    typecheck, lint, formatting, build, unit tests, then the browser tests (Chromium): the screens
+#            and what an agent sees on them, a whole run on the sample product in test/fixtures, and the
+#            stand-ins, sandboxed (bubblewrap), hostile ones included.
+#   publish  on main only, when package.json's version isn't on npm yet: `swarmbox` on npm, with provenance.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [staging, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+# Least privilege by default; publish asks for id-token: write itself.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The stand-in sandbox: bubblewrap needs unprivileged user namespaces, which Ubuntu 24.04 restricts through
+      # AppArmor; socat and ripgrep are sandbox-runtime's helpers. A GitHub-hosted runner is a throwaway VM.
+      - name: Sandbox tools
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends bubblewrap socat ripgrep
+      # pnpm's version comes from package.json's packageManager field.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Chromium
+        run: pnpm exec playwright-core install --with-deps chromium
+      - name: Typecheck, lint, formatting
+        run: pnpm run check
+      - name: Build
+        run: pnpm run build
+      - name: Unit tests
+        run: pnpm exec vitest run test/unit --maxWorkers=2
+      - name: Browser tests
+        # Stand-ins run sandboxed here too, hostile ones included.
+        run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts test/standins.test.ts test/twilio.test.ts test/email.test.ts test/s3.test.ts test/s3-sdk.test.ts test/helcim.test.ts test/expo-push.test.ts --maxWorkers=1
+
+  publish:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # npm provenance: the package says which commit and workflow built it
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Install
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Build
+        run: pnpm run build
+      - name: Publish, unless this version already is
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "swarmbox@$v" version >/dev/null 2>&1; then
+            echo "swarmbox@$v is already published"
+          else
+            pnpm publish --no-git-checks --access public
+          fi

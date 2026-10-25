@@ -1,0 +1,11 @@
+{
+  "name": "hostile",
+  "provider": "Hostile",
+  "apiVersion": "v1",
+  "surfaces": ["probe"],
+  "operations": [{ "name": "probe", "method": "GET", "path": "/probe" }],
+  "connect": { "baseUrls": { "api": "/" } },
+  "accounts": { "fields": { "key": "secret" } },
+  "behaviours": ["fail"],
+  "clock": "real"
+}
