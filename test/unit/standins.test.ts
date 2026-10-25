@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { assertNoStandins, isThisMachine, standInLeaks } from '../../src/standins/guard.ts';
 import { Manifest, matchPath, operationOf } from '../../src/standins/manifest.ts';
+import { ppidOfStat } from '../../src/standins/runner.ts';
 import { hexId, makeCredential } from '../../src/standins/sdk.ts';
 
 const base = {
@@ -113,5 +114,12 @@ describe('the production guard', () => {
       assertNoStandins({ METRICS_URL: 'http://localhost:9100/' }, { allowLoopback: ['METRICS_URL'] }),
     ).not.toThrow();
     expect(() => assertNoStandins({ RESEND_API_KEY: 're_live_123', NODE_ENV: 'production' })).not.toThrow();
+  });
+});
+
+describe('the process table on Linux', () => {
+  it('reads a parent from /proc/<pid>/stat, whatever the process is called', () => {
+    expect(ppidOfStat('4242 (node) S 4100 4242 4242 0 -1 4194560 …')).toBe(4100);
+    expect(ppidOfStat('4243 (a (b) c) R 1 4243 4243 0 -1 …')).toBe(1);
   });
 });

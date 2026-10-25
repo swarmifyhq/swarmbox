@@ -8,7 +8,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -135,20 +135,37 @@ function lines(stream: NodeJS.ReadableStream, onLine: (line: string) => void, on
   });
 }
 
-/** Every process below `root`, from the system's process table. */
-function descendants(root: number): number[] {
-  let table: string;
-  try {
-    table = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000 });
-  } catch {
-    return [];
+/** The parent in a /proc/<pid>/stat line, "pid (comm) state ppid …": the name may hold spaces and parentheses. */
+export function ppidOfStat(stat: string): number {
+  return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+}
+
+/** Each process's parent, from the system's process table: /proc on Linux (no ps there in slim images), ps elsewhere. */
+function parents(): Map<number, number> {
+  const table = new Map<number, number>();
+  if (process.platform === 'linux') {
+    for (const entry of readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        table.set(Number(entry), ppidOfStat(readFileSync(`/proc/${entry}/stat`, 'utf8')));
+      } catch {
+        // gone while we read
+      }
+    }
+    return table;
   }
-  const children = new Map<number, number[]>();
-  for (const line of table.split('\n')) {
+  const ps = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000 });
+  for (const line of ps.split('\n')) {
     const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-    if (!pid || ppid === undefined) continue;
-    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+    if (pid && ppid !== undefined) table.set(pid, ppid);
   }
+  return table;
+}
+
+/** Every process below `root`. Throws when the process table can't be read, so the caller can say so. */
+function descendants(root: number): number[] {
+  const children = new Map<number, number[]>();
+  for (const [pid, ppid] of parents()) children.set(ppid, [...(children.get(ppid) ?? []), pid]);
   const out: number[] = [];
   const walk = (p: number) => {
     for (const c of children.get(p) ?? []) {
@@ -219,7 +236,16 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
     // Everything under it, as the system sees it now, then its group: what a stand-in started can't outlive it,
     // even one that left the group.
-    for (const pid of descendants(child.pid)) {
+    let below: number[] = [];
+    try {
+      below = descendants(child.pid);
+    } catch (e) {
+      // Without the table only its group can be stopped; say so rather than pass it off as "nothing under it".
+      options.onStderr?.(
+        `swarmbox: could not read the process table to stop what ${manifest.name} started: ${(e as Error).message}\n`,
+      );
+    }
+    for (const pid of below) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
