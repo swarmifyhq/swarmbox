@@ -43,7 +43,7 @@ const Answer = z.strictObject({
 export const Manifest = z.strictObject({
   name: Slug,
   provider: Label,
-  apiVersion: z.string().min(1).max(40),
+  apiVersion: z.string().regex(/^[A-Za-z0-9._-]{1,40}$/, 'a version: letters, digits, dots and dashes'),
   surfaces: z.array(Slug).min(1).max(12),
   /** The provider's API, operation by operation, so behaviours can match one and the log can name it. */
   operations: z
@@ -59,8 +59,11 @@ export const Manifest = z.strictObject({
     .max(100),
   connect: z.strictObject({
     /** The base addresses a product maps to its own settings, by name: {"api": "/"}. */
-    baseUrls: z.record(Slug, z.string().startsWith('/')),
-    hosts: z.array(z.string()).optional(),
+    baseUrls: z.record(Slug, z.string().regex(/^\/[A-Za-z0-9._~/-]*$/, 'a path')),
+    hosts: z
+      .array(z.string().regex(/^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/, 'a host name'))
+      .max(20)
+      .optional(),
     browser: z.strictObject({ origins: z.array(z.url()).min(1) }).optional(),
   }),
   accounts: z.strictObject({
@@ -71,6 +74,12 @@ export const Manifest = z.strictObject({
   }),
   behaviours: z.array(z.enum(BEHAVIOURS)).min(1),
   answers: z.strictObject({ fail: Answer.optional(), limit: Answer.optional() }).optional(),
+  /** Headers its webhooks carry besides content-type, user-agent and accept: its signature, its timestamp. */
+  webhooks: z
+    .strictObject({
+      headers: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(20),
+    })
+    .optional(),
   inbound: z
     .array(
       z.strictObject({

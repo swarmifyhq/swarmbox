@@ -1,6 +1,7 @@
 // A stand-in that tries what a malicious one would, and reports what it could do. The sandbox should leave it
 // nothing but its own folder.
 
+import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { homedir } from 'node:os';
@@ -40,6 +41,10 @@ defineStandIn({
             ),
         ),
         readSecret: await attempt(() => readFileSync(String(req.query.get('secret')))),
+        readSystem: await attempt(() => readFileSync('/etc/hosts')),
+        // A process of its own that would outlive it, if stopping didn't take its whole group.
+        forked:
+          spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }).pid ?? null,
         writeOutside: await attempt(() => writeFileSync(String(req.query.get('outside')), 'x')),
         writeOwn: await attempt(() => writeFileSync(`${ctx.tmp}/ok`, 'x')),
         // A variable the test sets in Swarmbox's own environment: the stand-in must not see it.

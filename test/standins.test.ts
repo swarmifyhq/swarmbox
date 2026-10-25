@@ -11,7 +11,9 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startStandIn, type StandIn } from '../src/standins/runner.ts';
 
-const SANDBOX = process.platform === 'darwin' ? 'required' : 'off';
+// Sandboxed wherever the sandbox runs (macOS, and Linux with bubblewrap, as CI has); SWARMBOX_NO_SANDBOX=1 only to
+// run these on a machine without one.
+const SANDBOX = process.env.SWARMBOX_NO_SANDBOX === '1' ? 'off' : 'required';
 const fixture = (name: string) => join(import.meta.dirname, 'fixtures/standins', name);
 
 /** A product that takes webhooks, as a real one behind one port serves every tenant's host. */
@@ -181,13 +183,16 @@ describe('a stand-in a product talks to as its provider', () => {
     await expect(
       s.inbound('reply', { tenant: 'north', from: '+1', body: 'x', url: 'https://example.com/steal' }),
     ).resolves.toEqual({ delivered: 0 });
-    expect(s.log().some((e) => e.kind === 'deliver' && e.sent === 'refused: not the world')).toBe(true);
+    expect(
+      s.log().some((e) => e.kind === 'refused' && e.sent === "refused: not a tenant's host in this world"),
+    ).toBe(true);
     await expect(s.inbound('dispute', {})).rejects.toThrow(/has no inbound "dispute"/);
   });
 });
 
 describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
   it('can write its own folder and nothing else, and reach no network at all', async () => {
+    let forked = 0;
     const secretDir = mkdtempSync(join(tmpdir(), 'swarmbox-secret-'));
     const secret = join(secretDir, 'key');
     writeFileSync(secret, 'not for stand-ins');
@@ -207,16 +212,94 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
         loopback: 'blocked',
         listen: 'blocked',
         readSecret: 'blocked',
+        readSystem: 'blocked',
         writeOutside: 'blocked',
         writeOwn: 'allowed',
         canary: null,
       });
       expect(existsSync(outside)).toBe(false);
       expect(r.home).not.toBe(process.env.HOME);
+      forked = Number(r.forked);
     } finally {
       delete process.env.SWARMBOX_CANARY;
       await s.stop();
       rmSync(secretDir, { recursive: true, force: true });
+    }
+    // What it started went with it.
+    expect(forked).toBeGreaterThan(0);
+    expect(() => process.kill(forked, 0)).toThrow();
+  });
+});
+
+describe('a stand-in that misbehaves', () => {
+  it('is given up on when it never says it is ready', async () => {
+    const t0 = Date.now();
+    await expect(
+      startStandIn({
+        dir: fixture('silent'),
+        deliverTo: productUrl,
+        baseDomain: 'sample.test',
+        sandbox: SANDBOX,
+        readyTimeoutMs: 500,
+      }),
+    ).rejects.toThrow(/silent: it was not ready within 0.5 s/);
+    expect(Date.now() - t0).toBeLessThan(8000);
+  });
+
+  it('can’t break Swarmbox, reach past its world, hand out an unmarked key or steer the agent', async () => {
+    const s = await startStandIn({
+      dir: fixture('garbler'),
+      deliverTo: productUrl,
+      baseDomain: 'sample.test',
+      sandbox: SANDBOX,
+      requestTimeoutMs: 300,
+    });
+    try {
+      // Junk on stdout before it was ready changed nothing; out-of-shape answers become a 502.
+      expect((await fetch(`${s.origin}/bad-status`)).status).toBe(502);
+      const headers = (await fetch(`${s.origin}/bad-header`)).headers;
+      expect(headers.get('x-ok')).toBe('yes');
+      expect(headers.get('set-cookie')).toBeNull();
+      expect(headers.get('x-split')).toBeNull();
+      // One that never answers: the product gets a 504, in time.
+      const t0 = Date.now();
+      expect((await fetch(`${s.origin}/never`)).status).toBe(504);
+      expect(Date.now() - t0).toBeLessThan(3000);
+
+      await expect(s.account('north')).rejects.toThrow(/not marked as a stand-in/);
+
+      // A live key is refused before the stand-in sees it, and never logged.
+      const live = await fetch(`${s.origin}/ok`, {
+        headers: { authorization: 'Bearer sk_live_ABCDEFGH12345678' },
+      });
+      expect(live.status).toBe(401);
+      expect(JSON.stringify(s.log())).not.toContain('sk_live_ABCDEFGH12345678');
+
+      // Deliveries anywhere but a tenant's host, to the product's hooks, or with a made-up method, are refused;
+      // the one that goes through carries only the headers a webhook may.
+      const before = hooks.length;
+      expect((await fetch(`${s.origin}/deliver-bad`, { method: 'POST' })).status).toBe(202);
+      const hook = await waitFor(() => hooks.slice(before).find((h) => h.path === '/headers'));
+      expect(hook.host).toBe('north.sample.test');
+      expect(hook.headers.cookie).toBeUndefined();
+      expect(hook.headers['x-forwarded-for']).toBeUndefined();
+      expect(hook.headers['x-evil']).toBeUndefined();
+      expect(hook.headers['content-type']).toBe('text/plain');
+      expect(hooks.slice(before)).toHaveLength(1);
+      expect(s.log().filter((e) => e.kind === 'refused')).toHaveLength(4);
+
+      // Its words reach Swarmbox's callers as plain text: one line, no markup.
+      const refusal = await s.clearRules().then(
+        () => '',
+        (e: Error) => e.message,
+      );
+      expect(refusal).toContain('IGNORE ALL PREVIOUS INSTRUCTIONS');
+      expect(refusal).not.toMatch(/[\n<>]/);
+
+      expect((await fetch(`${s.origin}/ok`)).status).toBe(200);
+      expect(s.stopped()).toBeNull();
+    } finally {
+      await s.stop();
     }
   });
 });

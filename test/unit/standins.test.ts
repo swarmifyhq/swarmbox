@@ -2,7 +2,7 @@
 // on credentials, and the production guard.
 
 import { describe, expect, it } from 'vitest';
-import { assertNoStandins, standInLeaks } from '../../src/standins/guard.ts';
+import { assertNoStandins, isThisMachine, standInLeaks } from '../../src/standins/guard.ts';
 import { Manifest, matchPath, operationOf } from '../../src/standins/manifest.ts';
 import { hexId, makeCredential } from '../../src/standins/sdk.ts';
 
@@ -74,6 +74,38 @@ describe('the production guard', () => {
     } catch (e) {
       expect((e as Error).message).not.toContain(env.TWILIO_AUTH_TOKEN);
     }
+  });
+
+  it('knows this machine however it is written', () => {
+    for (const h of [
+      'localhost',
+      'api.localhost',
+      '127.0.0.1',
+      '127.1',
+      '2130706433',
+      '0.0.0.0',
+      '[::1]',
+      '::ffff:127.0.0.1',
+    ])
+      expect(isThisMachine(h), h).toBe(true);
+    for (const h of ['api.helcim.com', '10.0.0.5', '128.0.0.1', 'localhost.example.com'])
+      expect(isThisMachine(h), h).toBe(false);
+    const env = {
+      A_URI: 'postgres://user:pw@localhost/db',
+      B_ORIGIN: 'http://127.1:3000',
+      C_HOST: '0.0.0.0:9000',
+      D_URL: 'https://user@api.localhost/x',
+      E_URL: 'https://api.helcim.com/v2',
+      TWILIO_FROM: '+12505550142',
+      REAL_FROM: '+12505551234',
+    };
+    expect(standInLeaks(env).map((l) => l.variable)).toEqual([
+      'A_URI',
+      'B_ORIGIN',
+      'C_HOST',
+      'D_URL',
+      'TWILIO_FROM',
+    ]);
   });
 
   it('lets a product name addresses that really are on this machine in production', () => {

@@ -4,7 +4,6 @@
 
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { Manifest } from './manifest.ts';
 import {
   decode,
   encode,
@@ -86,7 +85,7 @@ export function makeCredential(kind: 'id' | 'secret' | 'phone' | 'email' | 'text
     case 'email':
       return `${tenant}@${MARK}.invalid`;
     case 'text':
-      return `${MARK} ${tenant}`;
+      return `${MARK}_${tenant}`;
   }
 }
 
@@ -109,12 +108,20 @@ export const json = (status: number, value: unknown, headers: Record<string, str
 
 /** Run a stand-in over this process's stdin and stdout. Called by the stand-in's module, once. */
 export function defineStandIn(def: StandInDefinition): StandInDefinition {
-  const manifest = Manifest.parse(def.manifest);
-  if (process.env.SWARMBOX_STANDIN === '1') serve(def, manifest);
+  // Swarmbox has checked the manifest already; the kit imports nothing but Node's own modules, so a stand-in in
+  // its sandbox needs to read nothing outside its own folder, Node and the kit.
+  if (process.env.SWARMBOX_STANDIN === '1') serve(def, def.manifest as KitManifest);
   return def;
 }
 
-function serve(def: StandInDefinition, manifest: Manifest): void {
+/** What the kit reads of a manifest. */
+interface KitManifest {
+  name: string;
+  clock: 'world' | 'real';
+  accounts: { fields: Record<string, 'id' | 'secret' | 'phone' | 'email' | 'text'> };
+}
+
+function serve(def: StandInDefinition, manifest: KitManifest): void {
   const send = (m: FromStandIn) => process.stdout.write(`${JSON.stringify(m)}\n`);
   let clock: ClockState | null = null;
   let clockSetAt = Date.now();

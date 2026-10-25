@@ -1,24 +1,28 @@
 // Swarmbox's side of a stand-in (docs/standins.md): it starts the stand-in as its own process inside an
-// operating-system sandbox with no network at all, serves its port, applies the general behaviours, delivers its
-// webhooks to the world, and keeps the log. The stand-in only ever sees messages on its stdin.
+// operating-system sandbox with no network and almost nothing to read, serves its port, applies the general
+// behaviours, delivers its webhooks to the world, and keeps the log.
+//
+// A stand-in is untrusted code. Nothing it sends may stop Swarmbox: every message is checked before it is used, every
+// wait has a time limit, and a stand-in that misbehaves is stopped while every world goes on. Nothing it writes
+// reaches the agent unshaped (shape.ts).
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { GENERAL, Manifest, operationOf, type Behaviour } from './manifest.ts';
 import type { SandboxManager as SandboxManagerApi } from '@anthropic-ai/sandbox-runtime';
-import { decode, encode, type ClockState, type FromStandIn, type Rule, type ToStandIn } from './protocol.ts';
+import { GENERAL, Manifest, operationOf, type Behaviour } from './manifest.ts';
+import { decode, encode, type ClockState, type Rule, type ToStandIn } from './protocol.ts';
+import { LIVE_CREDENTIAL, METHODS, plain, shapeAccount, shapeData, shapeHeaders } from './shape.ts';
 
 export interface LogEntry {
   cursor: string;
   at: string;
-  kind: 'request' | 'deliver' | 'inbound';
+  kind: 'request' | 'deliver' | 'inbound' | 'refused';
   operation: string | null;
   tenant: string | null;
   method: string;
@@ -47,8 +51,12 @@ export interface StandInOptions {
    * available; "off" is for Swarmbox's own tests on a machine without one, never for someone else's stand-in.
    */
   sandbox?: 'required' | 'off';
-  /** Folders the stand-in may read besides its own (Swarmbox's own package, for the kit it imports). */
-  readable?: string[];
+  /** How long the stand-in has to answer one request before the product gets a 504. Default 60 s. */
+  requestTimeoutMs?: number;
+  /** How long it has to say it is ready. Default 10 s. */
+  readyTimeoutMs?: number;
+  /** Called with a stand-in's own stderr, for the operator's console; never shown to the agent. */
+  onStderr?: (text: string) => void;
 }
 
 export interface StandIn {
@@ -65,11 +73,19 @@ export interface StandIn {
   log(after?: string): LogEntry[];
   setClock(clock: ClockState): void;
   reset(): Promise<void>;
+  /** Null while it runs; why it stopped, once it has. */
+  stopped(): string | null;
   stop(): Promise<void>;
 }
 
-const SWARMBOX_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+/** The kit's own folder: sdk and protocol, which import nothing but Node's built-ins. */
+const KIT_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));
 const LOG_KEPT = 5000;
+const MAX_LINE = 32 * 1024 * 1024;
+const READY_MS = 10_000;
+const ASK_MS = 10_000;
+const DELIVERIES_IN_FLIGHT = 64;
+const ALWAYS_SENT = new Set(['content-type', 'user-agent', 'accept']);
 const cut = (b: Buffer) =>
   b.length > 4096 ? `${b.subarray(0, 4096).toString('utf8')}…` : b.toString('utf8');
 
@@ -79,64 +95,131 @@ function sandbox() {
   return (sandboxReady ??= (async () => {
     const { SandboxManager } = await import('@anthropic-ai/sandbox-runtime');
     if (!SandboxManager.isSupportedPlatform())
-      throw new Error(
-        `stand-ins need the operating-system sandbox, which this platform (${process.platform}) lacks`,
-      );
+      throw new Error(`stand-ins need the operating-system sandbox, which ${process.platform} lacks here`);
+    const deps = SandboxManager.checkDependencies();
+    if (deps.errors.length)
+      throw new Error(`stand-ins need the operating-system sandbox: ${deps.errors.join('; ')}`);
     // No ask callback: anything the lists don't allow is denied, and the lists allow nothing.
     await SandboxManager.initialize({
       network: { allowedDomains: [], deniedDomains: [] },
-      filesystem: { denyRead: ['~'], allowRead: [], allowWrite: [], denyWrite: [] },
+      filesystem: { denyRead: ['/'], allowRead: [], allowWrite: [], denyWrite: [] },
     });
     return SandboxManager;
   })());
 }
 
+/** Reads a stream as lines, refusing any line past `max` bytes instead of buffering it. */
+function lines(stream: NodeJS.ReadableStream, onLine: (line: string) => void, onTooLong: () => void): void {
+  let parts: Buffer[] = [];
+  let size = 0;
+  stream.on('data', (chunk: Buffer) => {
+    let start = 0;
+    for (let i = chunk.indexOf(10); i !== -1; i = chunk.indexOf(10, start)) {
+      parts.push(chunk.subarray(start, i));
+      onLine(Buffer.concat(parts).toString('utf8'));
+      parts = [];
+      size = 0;
+      start = i + 1;
+    }
+    const rest = chunk.subarray(start);
+    size += rest.length;
+    if (size > MAX_LINE) {
+      parts = [];
+      size = 0;
+      onTooLong();
+      return;
+    }
+    if (rest.length) parts.push(rest);
+  });
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
 export async function startStandIn(options: StandInOptions): Promise<StandIn> {
-  const dir = resolve(options.dir);
+  // Real paths throughout: the sandbox compares them, and a package manager's symlinks or macOS's /var -> /private/var
+  // would otherwise leave a stand-in unable to read its own folder.
+  const dir = realpathSync(resolve(options.dir));
   const manifest = Manifest.parse(JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')));
   const entry = join(dir, options.entry ?? (existsSync(join(dir, 'index.ts')) ? 'index.ts' : 'index.js'));
-  const tmp = mkdtempSync(join(tmpdir(), `swarmbox-standin-${manifest.name}-`));
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), `swarmbox-standin-${manifest.name}-`)));
   const env = { PATH: '/usr/bin:/bin', HOME: tmp, TMPDIR: tmp, SWARMBOX_STANDIN: '1' };
-  const node = process.execPath;
+  const node = realpathSync(process.execPath);
+  const requestMs = options.requestTimeoutMs ?? 60_000;
 
   let child: ChildProcess;
-  if ((options.sandbox ?? 'required') === 'required') {
-    const sm = await sandbox();
-    const nodeDir = dirname(dirname(node));
-    const command = await sm.wrapWithSandbox(`'${node}' '${entry}'`, undefined, {
-      filesystem: {
-        // The user's files and every temp folder: where worlds keep their database sockets and other stand-ins
-        // their state. Then back only what this one needs: its own package, Node, Swarmbox's kit, its own folder.
-        denyRead: ['~', tmpdir(), '/tmp', '/private/tmp', '/private/var/folders'],
-        allowRead: [dir, nodeDir, SWARMBOX_ROOT, tmp, ...(options.readable ?? [])],
-        allowWrite: [tmp],
-        denyWrite: [],
-      },
-    });
-    child = spawn(command, { shell: true, env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'] });
-  } else {
-    child = spawn(node, [entry], { env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    if ((options.sandbox ?? 'required') === 'required') {
+      const sm = await sandbox();
+      const command = await sm.wrapWithSandbox(`'${node}' '${entry}'`, undefined, {
+        filesystem: {
+          // Nothing to read but what it runs on: its own package, Node, the kit, its own folder (and, on macOS,
+          // the OpenSSL settings Node reads as it starts). The rest of the disk is not there for it.
+          denyRead: ['/'],
+          allowRead: [
+            dir,
+            dirname(dirname(node)),
+            KIT_DIR,
+            tmp,
+            ...(process.platform === 'darwin' ? ['/System/Library/OpenSSL'] : []),
+          ],
+          allowWrite: [tmp],
+          denyWrite: [],
+        },
+      });
+      // Its own process group, so stopping it stops anything it started.
+      child = spawn(command, { shell: true, env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    } else {
+      child = spawn(node, [entry], { env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    }
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw e;
   }
 
-  // The stand-in's stderr is its own business, but a crash should be readable.
-  const stderr: string[] = [];
-  child.stderr!.on('data', (d: Buffer) => {
-    stderr.push(d.toString());
-    if (stderr.length > 50) stderr.shift();
-  });
-  const send = (m: ToStandIn) => child.stdin!.write(`${JSON.stringify(m)}\n`);
+  let stoppedWhy: string | null = null;
+  const kill = (why: string) => {
+    if (!stoppedWhy) stoppedWhy = why;
+    try {
+      if (child.pid) process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      child.kill('SIGKILL');
+    }
+  };
+  child.on('error', (e) => kill(`could not run: ${e.message}`));
+  child.stdin!.on('error', () => undefined); // a stand-in that died while we wrote: noticed on exit
+  child.stderr!.on('data', (d: Buffer) => options.onStderr?.(d.toString()));
+  const send = (m: ToStandIn) => {
+    if (stoppedWhy || !child.stdin!.writable) return;
+    child.stdin!.write(`${JSON.stringify(m)}\n`);
+  };
+
   let next = 0;
   const id = () => `m${next++}`;
-  const pending = new Map<string, (m: FromStandIn) => void>();
-  const ask = <T>(m: ToStandIn & { id: string }): Promise<T> =>
-    new Promise<T>((resolveIt, reject) => {
-      pending.set(m.id, (r) => {
-        if (r.type !== 'result') return reject(new Error(`${manifest.name}: unexpected ${r.type}`));
-        if (r.ok) resolveIt(r.value as T);
-        else reject(new Error(`${manifest.name}: ${r.error}`));
+  // Everything waiting on the stand-in, so its exit can answer all of it.
+  const pending = new Map<
+    string,
+    { resolve: (m: Record<string, unknown>) => void; fail: (why: string) => void }
+  >();
+  const wait = (key: string, ms: number, what: string) =>
+    new Promise<Record<string, unknown>>((ok, no) => {
+      const timer = setTimeout(() => {
+        pending.delete(key);
+        no(new Error(`${manifest.name} did not answer ${what} within ${ms / 1000} s`));
+      }, ms);
+      pending.set(key, {
+        resolve: (m) => (clearTimeout(timer), ok(m)),
+        fail: (why) => (clearTimeout(timer), no(new Error(`${manifest.name} stopped: ${why}`))),
       });
-      send(m);
     });
+  const ask = async (m: ToStandIn & { id: string }, what: string): Promise<unknown> => {
+    const answer = wait(m.id, ASK_MS, what);
+    send(m);
+    const r = await answer;
+    if (r.type !== 'result') throw new Error(`${manifest.name} answered ${what} out of turn`);
+    if (r.ok !== true) throw new Error(`${manifest.name} refused ${what}: ${plain(r.error)}`);
+    return r.value;
+  };
 
   const log: LogEntry[] = [];
   let cursor = 0;
@@ -147,10 +230,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
 
   // Accounts, so a request can be told apart by tenant: any credential value it carries.
   const accounts = new Map<string, Record<string, string>>();
-  const tenantOf = (req: { path: string; headers: Record<string, string>; body: Buffer }): string | null => {
-    const auth = req.headers.authorization ?? '';
-    const basic = auth.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString('utf8') : '';
-    const hay = [req.path, auth, basic, ...Object.values(req.headers), req.body.toString('utf8')].join('\n');
+  const tenantOf = (hay: string): string | null => {
     for (const [tenant, creds] of accounts)
       if (Object.values(creds).some((v) => v.length >= 8 && hay.includes(v))) return tenant;
     return null;
@@ -178,90 +258,96 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     return rule;
   };
 
-  // Deliveries: to the world's product only, with the tenant's Host; duplicate and reorder applied here.
+  // Deliveries: to a tenant's host on the world's product only; the stand-in picks the path and its declared headers.
   const world = new URL(options.deliverTo);
-  const held: (() => Promise<void>)[] = [];
-  let holdTimer: NodeJS.Timeout | undefined;
-  const post = async (
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-    body: Buffer,
-  ): Promise<number> => {
+  const tenantHost = new RegExp(
+    `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.${options.baseDomain.replace(/\./g, '\\.')}$`,
+  );
+  const declared = new Set(manifest.webhooks?.headers ?? []);
+  let inFlight = 0;
+  const refuseDelivery = (url: string, method: string, why: string) => {
+    record({
+      kind: 'refused',
+      operation: null,
+      tenant: null,
+      method,
+      target: url.slice(0, 300),
+      status: null,
+      sent: why,
+    });
+    return 0;
+  };
+  const post = (url: string, method: string, rawHeaders: unknown, body: Buffer): Promise<number> => {
     let target: URL;
     try {
       target = new URL(url);
     } catch {
-      return 0;
+      return Promise.resolve(refuseDelivery(String(url), method, 'refused: not a URL'));
     }
-    const host = target.hostname;
-    const domain = options.baseDomain;
-    const isTenant =
-      host === domain || host.endsWith(`.${domain}`) || host === '127.0.0.1' || host === 'localhost';
-    if (!isTenant) {
-      record({
-        kind: 'deliver',
-        operation: null,
-        tenant: null,
-        method,
-        target: url,
-        status: null,
-        sent: 'refused: not the world',
-      });
-      return 0;
-    }
+    if (!METHODS.has(method))
+      return Promise.resolve(refuseDelivery(url, method, 'refused: not an HTTP method'));
+    if (target.protocol !== 'http:' || !tenantHost.test(target.hostname))
+      return Promise.resolve(refuseDelivery(url, method, "refused: not a tenant's host in this world"));
+    if (target.pathname.startsWith('/_sandbox'))
+      return Promise.resolve(refuseDelivery(url, method, "refused: the product's own sandbox hooks"));
+    if (inFlight >= DELIVERIES_IN_FLIGHT)
+      return Promise.resolve(refuseDelivery(url, method, 'refused: too many at once'));
+    const headers = shapeHeaders(rawHeaders, (name) => ALWAYS_SENT.has(name) || declared.has(name));
+    inFlight++;
     return new Promise<number>((done) => {
-      const req = http.request(
-        {
-          host: '127.0.0.1',
-          port: Number(world.port),
-          method,
-          path: `${target.pathname}${target.search}`,
-          headers: { ...headers, host: target.host, 'content-length': String(body.length) },
-        },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (c: Buffer) => chunks.push(c));
-          res.on('end', () => {
-            record({
-              kind: 'deliver',
-              operation: null,
-              tenant: null,
-              method,
-              target: url,
-              status: res.statusCode ?? 0,
-              sent: cut(body),
-              answered: cut(Buffer.concat(chunks)),
-            });
-            done(res.statusCode ?? 0);
-          });
-        },
-      );
-      req.on('error', (e) => {
+      const finish = (status: number, answered: string) => {
+        inFlight--;
         record({
           kind: 'deliver',
           operation: null,
-          tenant: null,
+          tenant: target.hostname.split('.')[0]!,
           method,
           target: url,
-          status: 0,
+          status,
           sent: cut(body),
-          answered: e.message,
+          answered,
         });
-        done(0);
-      });
-      req.end(body);
+        done(status);
+      };
+      try {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port: Number(world.port),
+            method,
+            path: `${target.pathname}${target.search}`,
+            headers: { ...headers, host: target.host, 'content-length': String(body.length) },
+            timeout: 30_000,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (c: Buffer) => chunks.push(c));
+            res.on('end', () => finish(res.statusCode ?? 0, cut(Buffer.concat(chunks))));
+            res.on('error', (e) => finish(0, e.message));
+          },
+        );
+        req.on('timeout', () => req.destroy(new Error('the product did not answer within 30 s')));
+        req.on('error', (e) => finish(0, e.message));
+        req.end(body);
+      } catch (e) {
+        finish(0, (e as Error).message);
+      }
     });
   };
-  const deliver = async (m: Extract<FromStandIn, { type: 'deliver' }>) => {
-    const body = decode(m.body);
+  const held: (() => Promise<void>)[] = [];
+  let holdTimer: NodeJS.Timeout | undefined;
+  const deliver = async (m: Record<string, unknown>) => {
+    const deliveryId = String(m.id);
+    const url = String(m.url ?? '');
+    const method = String(m.method ?? 'POST').toUpperCase();
+    const body = decode(typeof m.body === 'string' ? m.body : '');
     const run = async () => {
-      const status = await post(m.url, m.method, m.headers, body);
-      send({ type: 'delivered', id: m.id, status });
+      const status = await post(url, method, m.headers, body);
+      send({ type: 'delivered', id: deliveryId, status });
     };
     if (takeGeneral('duplicate', null, null)) {
       await run();
-      void post(m.url, m.method, m.headers, body);
+      await post(url, method, m.headers, body);
       return;
     }
     const reorder = rules.find((r) => r.behaviour === 'reorder');
@@ -273,115 +359,193 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       holdTimer = setTimeout(
         () => {
           const all = held.splice(0).reverse();
-          void all.reduce((p, f) => p.then(f), Promise.resolve());
+          void all.reduce((p, f) => p.then(f), Promise.resolve()).catch(() => undefined);
         },
-        Number(reorder?.param?.windowMs ?? 500),
+        Math.min(Number(reorder?.param?.windowMs ?? 500), 10_000),
       );
       return;
     }
     await run();
   };
 
-  let ready: () => void;
+  let ready: () => void = () => undefined;
   const started = new Promise<void>((r) => (ready = r));
-  createInterface({ input: child.stdout! }).on('line', (line) => {
-    let m: FromStandIn;
-    try {
-      m = JSON.parse(line) as FromStandIn;
-    } catch {
-      return; // a stand-in that writes anything else to stdout gets ignored, never parsed as data
-    }
-    if (m.type === 'ready') return ready();
-    if (m.type === 'deliver') return void deliver(m);
-    const waiting = pending.get(m.id);
-    pending.delete(m.id);
-    waiting?.(m);
-  });
-  const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+  lines(
+    child.stdout!,
+    (line) => {
+      let m: unknown;
+      try {
+        m = JSON.parse(line);
+      } catch {
+        return; // anything but a message is ignored, never parsed as data
+      }
+      if (!isObject(m) || typeof m.type !== 'string') return;
+      if (m.type === 'ready') return ready();
+      if (m.type === 'deliver') {
+        if (typeof m.id !== 'string') return;
+        void deliver(m).catch(() => undefined);
+        return;
+      }
+      if (typeof m.id !== 'string') return;
+      const waiting = pending.get(m.id);
+      pending.delete(m.id);
+      waiting?.resolve(m);
+    },
+    () => kill('it wrote a message over 32 MB'),
+  );
+  const hanging = new Set<ServerResponse>();
+  const exited = new Promise<number | null>((r) =>
+    child.on('exit', (code) => {
+      if (!stoppedWhy) stoppedWhy = `it exited (code ${code})`;
+      for (const [key, p] of pending) {
+        pending.delete(key);
+        p.fail(stoppedWhy);
+      }
+      for (const res of hanging) res.destroy();
+      r(code);
+    }),
+  );
+
+  const cleanUp = async () => {
+    kill('stopped');
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+    rmSync(tmp, { recursive: true, force: true });
+  };
+
   send({ type: 'start', baseDomain: options.baseDomain, clock: options.clock ?? null, tmp });
-  const crashed = exited.then((code) => {
-    throw new Error(`${manifest.name} stopped before it was ready (${code}): ${stderr.join('').slice(-800)}`);
-  });
-  await Promise.race([started, crashed]);
+  const why = await Promise.race([
+    started.then(() => null),
+    exited.then(() => `it stopped before it was ready: ${stoppedWhy} (its stderr is on Swarmbox's console)`),
+    new Promise<string>((r) => {
+      const ms = options.readyTimeoutMs ?? READY_MS;
+      setTimeout(() => r(`it was not ready within ${ms / 1000} s`), ms).unref();
+    }),
+  ]);
+  if (why) {
+    await cleanUp();
+    throw new Error(`${manifest.name}: ${why}`);
+  }
 
   // The provider's port.
-  const hanging = new Set<ServerResponse>();
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_LINE / 2) req.destroy();
+      else chunks.push(c);
+    });
     req.on('end', () => {
-      void (async () => {
-        const body = Buffer.concat(chunks);
-        const url = new URL(req.url ?? '/', 'http://standin');
-        const headers = Object.fromEntries(
-          Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : (v ?? '')]),
-        );
-        const op = operationOf(manifest, req.method ?? 'GET', url.pathname);
-        const tenant = tenantOf({ path: url.pathname, headers, body });
-        const base = {
-          kind: 'request' as const,
-          operation: op?.name ?? null,
-          tenant,
-          method: req.method ?? 'GET',
-          target: `${url.pathname}${url.search}`,
-          sent: cut(body),
-        };
-        const answer = (status: number, h: Record<string, string>, b: Buffer, behaviour?: Behaviour) => {
-          record({ ...base, status, answered: cut(b), ...(behaviour ? { behaviour } : {}) });
-          res.writeHead(status, h).end(b);
-        };
-
-        if (takeGeneral('hang', base.operation, tenant)) {
-          record({ ...base, status: null, behaviour: 'hang' });
-          hanging.add(res);
-          res.on('close', () => hanging.delete(res));
-          return;
-        }
-        const failing = takeGeneral('fail', base.operation, tenant);
-        if (failing) {
-          const a = manifest.answers?.fail ?? { status: 503, body: { error: 'service unavailable' } };
-          return answer(
-            a.status,
-            { 'content-type': 'application/json', ...a.headers },
-            Buffer.from(JSON.stringify(a.body ?? {})),
-            'fail',
-          );
-        }
-        const limited = takeGeneral('limit', base.operation, tenant);
-        if (limited) {
-          const a = manifest.answers?.limit ?? { status: 429, body: { error: 'too many requests' } };
-          const retry = String(limited.param?.retryAfterSec ?? 1);
-          return answer(
-            a.status,
-            { 'content-type': 'application/json', 'retry-after': retry, ...a.headers },
-            Buffer.from(JSON.stringify(a.body ?? {})),
-            'limit',
-          );
-        }
-        const slow = takeGeneral('slow', base.operation, tenant);
-        if (slow) await new Promise((r) => setTimeout(r, Number(slow.param?.delayMs ?? 5000)));
-
-        const rid = id();
-        const reply = await new Promise<FromStandIn>((r) => {
-          pending.set(rid, r);
-          send({
-            type: 'request',
-            id: rid,
-            operation: op?.name ?? null,
-            params: op?.params ?? {},
-            tenant,
-            method: req.method ?? 'GET',
-            path: url.pathname,
-            query: url.search.slice(1),
-            headers,
-            body: encode(body),
-          });
-        });
-        if (reply.type !== 'response') return answer(500, {}, Buffer.from('stand-in answered out of turn'));
-        answer(reply.status, reply.headers ?? {}, decode(reply.body), slow ? 'slow' : undefined);
-      })();
+      void handle(req, res, Buffer.concat(chunks)).catch(() => {
+        if (!res.headersSent) res.writeHead(502).end();
+        else res.destroy();
+      });
     });
   });
+  const handle = async (req: IncomingMessage, res: ServerResponse, body: Buffer) => {
+    const url = new URL(req.url ?? '/', 'http://standin');
+    const headers = Object.fromEntries(
+      Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : (v ?? '')]),
+    );
+    const method = req.method ?? 'GET';
+    const op = operationOf(manifest, method, url.pathname);
+    const auth = headers.authorization ?? '';
+    const basic = auth.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString('utf8') : '';
+    const hay = [url.pathname, url.search, basic, ...Object.values(headers), body.toString('utf8')].join(
+      '\n',
+    );
+    const tenant = tenantOf(hay);
+    const base = {
+      kind: 'request' as const,
+      operation: op?.name ?? null,
+      tenant,
+      method,
+      target: `${url.pathname}${url.search}`,
+    };
+    const answer = (status: number, h: Record<string, string>, b: Buffer, behaviour?: Behaviour) => {
+      record({ ...base, sent: cut(body), status, answered: cut(b), ...(behaviour ? { behaviour } : {}) });
+      res.writeHead(status, h).end(b);
+    };
+
+    // A real live key never reaches a stand-in, and is never logged.
+    if (LIVE_CREDENTIAL.test(hay)) {
+      record({ ...base, status: 401, sent: '[a live credential: refused, not logged]' });
+      return res
+        .writeHead(401, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: 'Swarmbox stand-ins refuse live credentials' }));
+    }
+    if (takeGeneral('hang', base.operation, tenant)) {
+      record({ ...base, sent: cut(body), status: null, behaviour: 'hang' });
+      hanging.add(res);
+      res.on('close', () => hanging.delete(res));
+      return;
+    }
+    const failing = takeGeneral('fail', base.operation, tenant);
+    if (failing) {
+      const a = manifest.answers?.fail ?? { status: 503, body: { error: 'service unavailable' } };
+      return answer(
+        a.status,
+        { 'content-type': 'application/json', ...a.headers },
+        Buffer.from(JSON.stringify(a.body ?? {})),
+        'fail',
+      );
+    }
+    const limited = takeGeneral('limit', base.operation, tenant);
+    if (limited) {
+      const a = manifest.answers?.limit ?? { status: 429, body: { error: 'too many requests' } };
+      const retry = String(Math.max(0, Math.min(3600, Number(limited.param?.retryAfterSec ?? 1) || 1)));
+      return answer(
+        a.status,
+        { 'content-type': 'application/json', 'retry-after': retry, ...a.headers },
+        Buffer.from(JSON.stringify(a.body ?? {})),
+        'limit',
+      );
+    }
+    const slow = takeGeneral('slow', base.operation, tenant);
+    if (slow)
+      await new Promise((r) => setTimeout(r, Math.min(Number(slow.param?.delayMs ?? 5000) || 0, 120_000)));
+    if (stoppedWhy)
+      return answer(
+        502,
+        { 'content-type': 'text/plain' },
+        Buffer.from(`the ${manifest.name} stand-in stopped`),
+      );
+
+    const rid = id();
+    const replied = wait(rid, requestMs, 'a request');
+    send({
+      type: 'request',
+      id: rid,
+      operation: op?.name ?? null,
+      params: op?.params ?? {},
+      tenant,
+      method,
+      path: url.pathname,
+      query: url.search.slice(1),
+      headers,
+      body: encode(body),
+    });
+    let reply: Record<string, unknown>;
+    try {
+      reply = await replied;
+    } catch (e) {
+      const timedOut = !stoppedWhy;
+      return answer(
+        timedOut ? 504 : 502,
+        { 'content-type': 'text/plain' },
+        Buffer.from(plain((e as Error).message)),
+      );
+    }
+    const status = Number(reply.status);
+    if (reply.type !== 'response' || !Number.isInteger(status) || status < 100 || status > 599)
+      return answer(502, { 'content-type': 'text/plain' }, Buffer.from('the stand-in gave no valid answer'));
+    answer(
+      status,
+      shapeHeaders(reply.headers),
+      decode(typeof reply.body === 'string' ? reply.body : ''),
+      slow ? 'slow' : undefined,
+    );
+  };
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -392,7 +556,10 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       Object.entries(manifest.connect.baseUrls).map(([k, p]) => [k, `${origin}${p === '/' ? '' : p}`]),
     ),
     async account(tenant) {
-      const creds = await ask<Record<string, string>>({ type: 'account', id: id(), tenant });
+      const creds = shapeAccount(
+        await ask({ type: 'account', id: id(), tenant }, 'an account'),
+        manifest.accounts.fields,
+      );
       accounts.set(tenant, creds);
       return creds;
     },
@@ -403,20 +570,20 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
         );
       const rule: Rule = { ...input, id: randomBytes(4).toString('hex') };
       if (GENERAL.includes(rule.behaviour)) rules.push(rule);
-      else await ask({ type: 'behave', id: id(), rule });
+      else await ask({ type: 'behave', id: id(), rule }, 'a behaviour');
       return rule;
     },
     rules: () => [...rules],
     async clearRules(ruleId) {
       rules = ruleId ? rules.filter((r) => r.id !== ruleId) : [];
-      await ask({ type: 'unbehave', id: id(), ruleId: ruleId ?? null });
+      await ask({ type: 'unbehave', id: id(), ruleId: ruleId ?? null }, 'clearing behaviours');
     },
     async inbound(kind, body) {
       if (!manifest.inbound.some((k) => k.kind === kind))
         throw new Error(
           `${manifest.name} has no inbound "${kind}"; it has ${manifest.inbound.map((k) => k.kind).join(', ') || 'none'}`,
         );
-      const value = await ask<unknown>({ type: 'inbound', id: id(), kind, body });
+      const value = shapeData(await ask({ type: 'inbound', id: id(), kind, body }, `an inbound ${kind}`));
       record({
         kind: 'inbound',
         operation: kind,
@@ -434,16 +601,13 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     },
     async reset() {
       rules = [];
-      await ask({ type: 'reset', id: id() });
+      await ask({ type: 'reset', id: id() }, 'a reset');
     },
+    stopped: () => stoppedWhy,
     async stop() {
-      for (const res of hanging) res.destroy();
+      server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
-      child.stdin!.end();
-      const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
-      await exited;
-      clearTimeout(timer);
-      rmSync(tmp, { recursive: true, force: true });
+      await cleanUp();
     },
   };
 }

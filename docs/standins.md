@@ -77,6 +77,7 @@ interface StandInManifest {
   };
   accounts: { fields: Record<string, 'id' | 'secret' | 'phone' | 'email' | 'text'> };
   behaviours: Behaviour[]; // which of the vocabulary it supports
+  webhooks?: { headers: string[] }; // what its webhooks may carry besides content-type, user-agent and accept
   answers?: {
     // how its provider says "down" and "slow down", for the behaviours Swarmbox applies itself
     fail?: { status: number; headers?: Record<string, string>; body?: unknown };
@@ -179,27 +180,62 @@ These are Swarmbox's own, with no stand-in involved:
 
 ## Security
 
+A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past its world or steer the agent.
+
 - **Each stand-in runs in an operating-system sandbox, with no network at all.** On macOS that's Seatbelt, as
-  Anthropic's open-source sandbox runtime does it; on Linux, bubblewrap; containers are the fallback.
-  - It can read its own package, Node and Swarmbox's kit, and read and write its own temporary folder. The user's
-    files and every temp folder are denied, since worlds keep their database sockets there and other stand-ins
-    their state.
+  Anthropic's open-source sandbox runtime does it; on Linux, bubblewrap. Containers are the fallback.
+  - **Reads are denied by default.** It can read its own package, Node, the kit and its own temporary folder, plus
+    on macOS the OpenSSL settings Node reads as it starts. Nothing else on the disk is there for it: not the user's
+    files, other temp folders (where worlds keep their database sockets), local databases' data or mounted
+    volumes. Paths are compared as real paths, so symlinks don't open a way round.
+  - It can write only its own temporary folder.
   - It gets no sockets of any kind and none of the developer's environment. Its only channel is stdin and stdout,
     to Swarmbox.
+  - It runs in its own process group, so stopping it stops anything it started.
   - Swarmbox's own stand-ins run this way too, so the path every community stand-in takes is always the one in use.
   - Why not let it listen on its own port: on macOS the sandbox's "local binding" setting also allows connecting to
     every local port, which would put a developer's local databases and dev servers in reach.
-- **The agent never reads a stand-in's own words as instructions.** Tool descriptions come from the manifest.
-  Control-path answers are checked against their schemas, and are shown to the agent marked as data. Free text from
-  outside the scenario's own words (a message body, an email) can be screened by Jev before the agent reads it; Jev
-  is an optional plugin.
+- **A stand-in ships as bundled JavaScript with no runtime dependencies.** The kit imports only Node's own modules,
+  so nothing outside those folders has to be readable. Node won't run TypeScript from inside `node_modules`, and a
+  package manager's dependency folders would otherwise need opening up.
+- **Nothing it sends can break Swarmbox.**
+  - Every message is checked before it's used, and anything else on its stdout is ignored.
+  - A message over 32 MB stops the stand-in.
+  - An answer with a bad status, or headers that are invalid or frame the connection, becomes a 502.
+  - Every wait has a limit:
+    - 10 s to be ready;
+    - 10 s for any control answer;
+    - `requestTimeoutMs` (60 s by default) for a request, after which the product gets a 504.
+  - When it exits, everything waiting on it is answered.
+- **It can deliver only to its world.**
+  - A webhook goes over plain HTTP to `<tenant>.<baseDomain>` on the world's port, and nowhere else.
+  - It can't reach the bare platform host, `localhost`, or the product's `/_sandbox` hooks.
+  - It can use only standard methods, and carry only `content-type`, `user-agent`, `accept` and the headers its
+    manifest declares under `webhooks.headers` (its signature and timestamp). So no cookies and no forwarded
+    addresses.
+  - At most 64 deliveries can be in flight at once.
 - **A fake key can never work in production.**
-  - Every credential a stand-in issues carries a mark: the word `swarmbox` where the format allows it
-    (`sk_test_swarmbox_…`), and the hex mark `c0ffee5b` where only hex will do (a Twilio AccountSid,
-    `ACc0ffee5b…`).
-  - Stand-ins refuse real-looking keys (`sk_live_…`, `AKIA…`).
+  - Every credential a stand-in issues carries a mark, and Swarmbox checks each account before using it:
+    - ids, secrets and text carry the word `swarmbox`, or the hex mark `c0ffee5b` where only hex will do (a
+      Twilio AccountSid is `ACc0ffee5b…`);
+    - phones are 555-0100 to 555-0199, the numbers kept for fiction;
+    - emails are on `swarmbox.invalid`.
+    - An unmarked account is refused.
+  - A request carrying a real-looking live key (`sk_live_…`, `rk_live_…`, `AKIA…`, `ASIA…`) is refused before the
+    stand-in sees it, and the key is never logged.
   - The package exports `assertNoStandins(env)`, for a product to call at start-up in production. It refuses
-    Swarmbox credentials, loopback provider addresses, and Swarmbox's local certificate authority.
+    marked credentials, fictional numbers, provider addresses on this machine however they're written (`127.1`,
+    `0.0.0.0`, `[::1]`, `user@localhost`, `*.localhost`), and Swarmbox's local certificate authority. It names the
+    variable and never the value.
+- **The agent never reads a stand-in's own words as instructions.**
+  - Tool descriptions come only from the checked manifest: labels are plain words, versions and hosts have fixed
+    shapes, and unknown fields are refused.
+  - What it returns from an inbound is reduced to plain JSON: short strings of plain characters, at most four levels
+    deep.
+  - Its refusals are cut to one plain line.
+  - Its stderr goes to the operator's console, never to the agent.
+  - Everything is shown to the agent marked as data. Free text from outside the scenario's own words (a message
+    body, an email) can be screened by Jev before the agent reads it; Jev is an optional plugin.
 
 ## Order of work
 
