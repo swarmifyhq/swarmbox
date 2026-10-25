@@ -1,0 +1,28 @@
+{
+  "name": "postbox",
+  "provider": "Postbox",
+  "apiVersion": "v1",
+  "surfaces": ["sms"],
+  "operations": [
+    { "name": "messages.create", "method": "POST", "path": "/v1/accounts/:account/messages" },
+    { "name": "messages.get", "method": "GET", "path": "/v1/accounts/:account/messages/:sid" }
+  ],
+  "connect": { "baseUrls": { "api": "/" } },
+  "accounts": { "fields": { "account": "id", "secret": "secret", "from": "phone" } },
+  "behaviours": ["fail", "hang", "slow", "limit", "reject", "undeliver", "duplicate", "reorder"],
+  "answers": { "fail": { "status": 503, "body": { "code": 20500, "message": "Postbox is down" } } },
+  "webhooks": { "headers": ["x-postbox-time", "x-postbox-signature"] },
+  "inbound": [
+    {
+      "kind": "reply",
+      "label": "A customer replies",
+      "fields": {
+        "tenant": "Which tenant",
+        "from": "Their number",
+        "body": "What they wrote",
+        "url": "Where the reply is posted"
+      }
+    }
+  ],
+  "clock": "world"
+}

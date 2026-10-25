@@ -47,7 +47,11 @@ jobs:
       - name: Unit tests
         run: pnpm exec vitest run test/unit --maxWorkers=2
       - name: Browser tests
-        run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts --maxWorkers=1
+        # This container has no Linux sandbox yet (bubblewrap needs namespaces it doesn't grant), so stand-ins run
+        # unsandboxed here and the hostile ones are skipped; macOS runs them sandboxed.
+        env:
+          SWARMBOX_NO_SANDBOX: '1'
+        run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts test/standins.test.ts --maxWorkers=1
 
   publish:
     needs: check

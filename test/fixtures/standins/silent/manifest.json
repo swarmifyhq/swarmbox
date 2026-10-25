@@ -1,0 +1,11 @@
+{
+  "name": "silent",
+  "provider": "Silent",
+  "apiVersion": "v1",
+  "surfaces": ["nothing"],
+  "operations": [{ "name": "ok", "method": "GET", "path": "/ok" }],
+  "connect": { "baseUrls": { "api": "/" } },
+  "accounts": { "fields": { "key": "secret" } },
+  "behaviours": ["fail"],
+  "clock": "real"
+}
