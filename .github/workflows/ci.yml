@@ -29,9 +29,17 @@ jobs:
   check:
     runs-on: [self-hosted, swarmbox]
     timeout-minutes: 20
-    container: mcr.microsoft.com/playwright:v1.63.0-noble
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+      # The stand-in sandbox (bubblewrap) needs user, network and pid namespaces and its own /proc, which Docker's
+      # default seccomp, AppArmor and masked paths refuse. Not --privileged. --init reaps what tests kill.
+      # Since 25 Oct (DEC-004): on our self-hosted runner only, until PR CI moves to GitHub-hosted runners before
+      # going public; remove these options then.
+      options: --init --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined
     steps:
       - uses: actions/checkout@v4
+      - name: Sandbox tools
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends bubblewrap socat ripgrep
       # pnpm's version comes from package.json's packageManager field.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -47,10 +55,7 @@ jobs:
       - name: Unit tests
         run: pnpm exec vitest run test/unit --maxWorkers=2
       - name: Browser tests
-        # This container has no Linux sandbox yet (bubblewrap needs namespaces it doesn't grant), so stand-ins run
-        # unsandboxed here and the hostile ones are skipped; macOS runs them sandboxed.
-        env:
-          SWARMBOX_NO_SANDBOX: '1'
+        # Stand-ins run sandboxed here too, hostile ones included.
         run: pnpm exec vitest run test/sight.test.ts test/harness.test.ts test/standins.test.ts --maxWorkers=1
 
   publish:
