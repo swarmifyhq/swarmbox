@@ -85,30 +85,36 @@ interface StandInManifest {
 
 ## A stand-in's process
 
-Swarmbox starts each stand-in as its own process, before the world's product starts. It's sandboxed, as described
-under Security. The process gets one JSON object on stdin:
+A stand-in has **no network at all**. Swarmbox starts it as its own sandboxed process (see Security) before the
+world's product starts. The two talk over the stand-in's stdin and stdout, one JSON message per line, as an MCP
+server does. Swarmbox does everything that touches the network, for every stand-in:
 
-```ts
-{ port: number,            // where it serves the provider's API and its control paths
-  token: string,           // the bearer token for its control paths
-  deliver: string,         // the world's product, as http://127.0.0.1:<port>: where webhooks go
-  baseDomain: string }     // tenants' hosts are <tenant>.<baseDomain>: a webhook URL on one is delivered to `deliver`, with the URL's Host
-```
+- **It serves the stand-in's port.** Swarmbox listens on `127.0.0.1:<port>` and hands each request to the stand-in
+  as `{type: "request", id, method, path, query, headers, body}`. Bodies go as base64. The stand-in answers
+  `{type: "response", id, status, headers, body}`.
+- **It applies the general behaviours**, `fail`, `hang`, `slow` and `limit`, before a request reaches the stand-in,
+  using the provider's own status codes and headers from the manifest. So a stand-in implements only what's
+  particular to its provider: `reject`, `decline`, `undeliver`, `bounce`, `timeout`, `late`, `manual` and `gone`.
+- **It delivers webhooks.** The stand-in sends `{type: "deliver", id, url, method, headers, body}`. For a URL on a
+  tenant's host, Swarmbox posts it to the world's product over loopback with that URL's `Host` header, so a product
+  behind one port serves every tenant's host. The stand-in signs the URL as written. `duplicate` and `reorder` are
+  applied here.
+- **It keeps the log.** Every request, answer and delivery, in order. So `standin_log` works the same for every
+  stand-in, and a stand-in can't hide or invent traffic.
 
-It serves the provider's API at the provider's own paths. It also serves its control paths under `/__swarmbox/`,
-behind the token:
+The stand-in's own messages are for what only it knows:
 
-| Path                                           | Does                                                           |
-| ---------------------------------------------- | -------------------------------------------------------------- |
-| `POST /__swarmbox/accounts`                    | Make an account; answers its credentials (all marked fake).    |
-| `POST /__swarmbox/behaviours`, `GET`, `DELETE` | Apply, list and clear behaviours.                              |
-| `POST /__swarmbox/inbound`                     | Make something arrive: `{kind, ...typed body}`.                |
-| `GET /__swarmbox/log?after=`                   | Outbound and inbound, in order, with a cursor.                 |
-| `POST /__swarmbox/clock`                       | The world's time, pushed by Swarmbox whenever the clock moves. |
-| `POST /__swarmbox/reset`                       | Forget everything except its accounts.                         |
+| Message from Swarmbox                     | Does                                                                                     |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `start {config}`                          | First, once: the world's base domain, the clock it signs with, and its temporary folder. |
+| `account {tenant}`                        | Make an account; it answers with the credentials, all marked fake.                       |
+| `behave {behaviour, match, count, param}` | One of its own behaviours, applied, listed or cleared.                                   |
+| `inbound {kind, ...typed body}`           | Make something arrive. It answers with what it delivered.                                |
+| `clock {at, paused}`                      | The world's time, sent whenever the clock moves.                                         |
+| `reset`                                   | Forget everything except its accounts.                                                   |
 
-When a webhook goes to a URL on a tenant's host, the stand-in delivers it to `deliver` with that URL's `Host` header,
-and signs the URL as written. That's how a product behind one port serves every tenant's host.
+Swarmbox ships a small SDK, `defineStandIn({manifest, routes, inbound, behaviours})`, so an author writes handlers,
+not a server or a message loop.
 
 ## Time
 
@@ -168,11 +174,14 @@ These are Swarmbox's own, with no stand-in involved:
 
 ## Security
 
-- **Each stand-in runs in an operating-system sandbox.** On macOS that's Seatbelt, as Anthropic's open-source sandbox
-  runtime does it; on Linux, bubblewrap; containers are the fallback.
-  - It may listen on its port, connect to `deliver` only, and use a temporary folder of its own.
-  - It gets no other network, no other files, and none of the developer's environment.
+- **Each stand-in runs in an operating-system sandbox, with no network at all.** On macOS that's Seatbelt, as
+  Anthropic's open-source sandbox runtime does it; on Linux, bubblewrap; containers are the fallback.
+  - It can read its own package and write its own temporary folder, and nothing else.
+  - It gets no sockets of any kind and none of the developer's environment. Its only channel is stdin and stdout,
+    to Swarmbox.
   - Swarmbox's own stand-ins run this way too, so the path every community stand-in takes is always the one in use.
+  - Why not let it listen on its own port: on macOS the sandbox's "local binding" setting also allows connecting to
+    every local port, which would put a developer's local databases and dev servers in reach.
 - **The agent never reads a stand-in's own words as instructions.** Tool descriptions come from the manifest.
   Control-path answers are checked against their schemas, and are shown to the agent marked as data. Free text from
   outside the scenario's own words (a message body, an email) can be screened by Jev before the agent reads it; Jev
