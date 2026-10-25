@@ -33,6 +33,8 @@ export const Scenario = z.strictObject({
        * signs in. Needs the product's hooks. Default: this machine's now.
        */
       startsAt: z.string().regex(STARTS_AT, '"HH:MM" or "YYYY-MM-DD HH:MM"').optional(),
+      /** The product's own world options (what world_create's options take), checked when the run starts. */
+      options: z.record(z.string(), z.unknown()).optional(),
     })
     .default({ seed: true }),
   /** Who is on a screen: a role each, the first person holding it (a second of the same role, the second). */

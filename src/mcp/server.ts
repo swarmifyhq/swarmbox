@@ -75,14 +75,23 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               'time it comes back with its data on the code as it is now, as a redeploy does. tenants and seed ' +
               'apply only the first time.',
           ),
+        ...(product.worldOptions
+          ? {
+              options: z
+                .strictObject(product.worldOptions)
+                .optional()
+                .describe(`${product.name}’s own options for this world`),
+            }
+          : {}),
       },
     },
-    async ({ tenants, seed, keep }) =>
+    async ({ tenants, seed, keep, options }) =>
       guard(async () => {
         const w = await h.createWorld({
           ...(tenants ? { tenants } : {}),
           ...(seed === undefined ? {} : { seed }),
           ...(keep ? { keep } : {}),
+          ...(options ? { options: options as Record<string, unknown> } : {}),
         });
         return text(describeWorld(h, w.id));
       }),

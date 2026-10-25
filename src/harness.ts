@@ -640,6 +640,7 @@ export function createHarness<W extends ProductWorld>(
         tenants: partial.tenants ?? [],
         seed: partial.seed ?? false,
         ...(partial.keep ? { keep: partial.keep } : {}),
+        ...(partial.options ? { options: partial.options } : {}),
       };
       const id = `w${nextWorld++}`;
       const run = creating.then(async () => {

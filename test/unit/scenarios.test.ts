@@ -40,6 +40,16 @@ describe('scenarios', () => {
     expect(() => Scenario.parse({ ...minimal, world: { companies: ['acme'] } })).toThrow();
   });
 
+  it('takes when the day starts and the product’s own world options', () => {
+    const s = Scenario.parse({
+      ...minimal,
+      world: { startsAt: '2026-10-31 23:30', options: { mirroring: ['acme'] } },
+    });
+    expect(s.world).toEqual({ seed: true, startsAt: '2026-10-31 23:30', options: { mirroring: ['acme'] } });
+    expect(Scenario.parse({ ...minimal, world: { startsAt: '09:00' } }).world.startsAt).toBe('09:00');
+    expect(() => Scenario.parse({ ...minimal, world: { startsAt: '9am' } })).toThrow(/HH:MM/);
+  });
+
   it('fills defaults: a seeded world, no conditions, 20 minutes', () => {
     expect(Scenario.parse(minimal)).toMatchObject({
       world: { seed: true },

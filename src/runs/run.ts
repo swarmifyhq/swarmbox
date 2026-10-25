@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { failing, type CheckResult, type Settled } from '../checks.ts';
 import { HarnessError, type Harness, type Signal } from '../harness.ts';
 import type { FindingSink, Persona, ProductWorld, SinkRun } from '../product.ts';
+import { z } from 'zod';
 import { describeProvenance } from '../provenance.ts';
 import { startInstant } from '../time.ts';
 import { loadScenario, type Scenario } from '../scenarios/spec.ts';
@@ -134,11 +135,18 @@ export function createRuns<W extends ProductWorld>(
       const scenario = loadScenario(scenarioId, scenarioDir);
       const refused = budget.refusal();
       if (refused) throw new HarnessError(`not starting ${scenarioId}: ${refused}`);
+      const options = scenario.world.options;
+      if (options && !product.worldOptions)
+        throw new HarnessError(`${scenarioId}: world.options given, and ${product.name} takes none`);
+      const checked = options ? z.strictObject(product.worldOptions!).safeParse(options) : undefined;
+      if (checked && !checked.success)
+        throw new HarnessError(`${scenarioId}: world.options: ${z.prettifyError(checked.error)}`);
       budget.started();
       const w = await h.createWorld({
         ...(scenario.world.tenants ? { tenants: scenario.world.tenants } : {}),
         seed: scenario.world.seed,
         ...(scenario.world.keep ? { keep: scenario.world.keep } : {}),
+        ...(checked ? { options: checked.data as Record<string, unknown> } : {}),
       });
       try {
         const people = await h.people(w.id);

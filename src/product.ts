@@ -9,6 +9,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Page } from 'playwright-core';
+import type { z } from 'zod';
 import type { CheckResult, Settled } from './checks.ts';
 import type { Harness } from './harness.ts';
 import type { Hooks } from './hooks.ts';
@@ -38,6 +39,8 @@ export interface WorldSpec {
   seed: boolean;
   /** Keep this world's data under this name, across runs, if the product can. */
   keep?: string;
+  /** The product's own options for this world (Product.worldOptions), already checked against them. */
+  options?: Record<string, unknown>;
 }
 
 /** A cookie the browser starts with, for the tenant's own origin. */
@@ -143,6 +146,11 @@ export interface Product<W extends ProductWorld = ProductWorld> {
   /** Where runs and the budget ledger are kept. */
   home: string;
   startWorld(spec: WorldSpec, port: number): Promise<W>;
+  /**
+   * Options of the product's own for a world, as zod fields with descriptions: a tenant still migrating
+   * from another system, a feature switched on. world_create and a scenario's world.options take them.
+   */
+  worldOptions?: z.ZodRawShape;
   /**
    * The app a cast member opens when the scenario names none: a technician's tablet app. Undefined for
    * the product's main app.

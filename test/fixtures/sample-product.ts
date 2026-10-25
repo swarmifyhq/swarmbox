@@ -5,6 +5,7 @@
 
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { z } from 'zod';
 import { hooksFor, type Hooks } from '../../src/hooks.ts';
 import type { CheckResult, Settled } from '../../src/checks.ts';
 import type { Persona, Product, ProductWorld, SignIn } from '../../src/product.ts';
@@ -71,7 +72,7 @@ export interface SampleWorld extends ProductWorld {
   requests: string[];
 }
 
-async function startSample(tenants: string[], port: number): Promise<SampleWorld> {
+async function startSample(tenants: string[], port: number, closed: string[] = []): Promise<SampleWorld> {
   const feeds = new Map<string, Row[]>(tenants.map((t) => [t, []]));
   const inbox: Row[] = [];
   let seq = 0;
@@ -218,7 +219,7 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
           violations: failed ? [{ summary: `${failed} texts failed` }] : [],
         };
       }),
-    notes: () => ['a sample world'],
+    notes: () => ['a sample world', ...closed.map((t) => `${t} is closed for the season`)],
     stop: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
@@ -232,7 +233,13 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     scenarioDir: dirs.scenarioDir,
     home: dirs.home,
     apps: ['tech'],
-    startWorld: (spec, port) => startSample(spec.tenants.length ? spec.tenants : ['demo-shop'], port),
+    startWorld: (spec, port) =>
+      startSample(
+        spec.tenants.length ? spec.tenants : ['demo-shop'],
+        port,
+        (spec.options?.closed as string[] | undefined) ?? [],
+      ),
+    worldOptions: { closed: z.array(z.string()).optional().describe('Shops closed for the season') },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };
 }

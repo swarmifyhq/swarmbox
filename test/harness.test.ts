@@ -60,6 +60,14 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(tools.tools.find((t) => t.name === 'world_list')!.description).toContain('shops');
   });
 
+  it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {
+    const made = await call('world_create', { tenants: ['east'], options: { closed: ['east'] } });
+    expect(made.text).toContain('east is closed for the season');
+    await call('world_destroy', { world: /^(w\d+)/.exec(made.text)![1]! });
+    const odd = await call('world_create', { tenants: ['east'], options: { colour: 'red' } });
+    expect(odd.error).toBe(true);
+  });
+
   it('opens a person signed in, sees the dialog first, acts in it, and hears what the server did', async () => {
     const opened = await call('screen_open', { world, person: 'north-ana' });
     expect(opened.text).toContain('Signed in as Ana');
