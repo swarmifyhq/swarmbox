@@ -178,7 +178,8 @@ describe('a run of a scenario', () => {
         id: 'send-an-estimate',
         title: 'Send an estimate',
         goal: 'Does the customer get the estimate?',
-        world: { seed: false },
+        // A Saturday morning in March, the shop's time (Edmonton, 07:00 behind UTC then).
+        world: { seed: false, startsAt: '2030-03-02 09:00' },
         cast: [{ role: 'owner', part: 'the office' }, { role: 'technician' }],
         try: ['Send the estimate to the customer'],
         expect: ['The customer gets a text with the link'],
@@ -192,7 +193,13 @@ describe('a run of a scenario', () => {
     const tech = h.screens().find((s) => s.persona.id === 'demo-shop-ben')!;
     expect(tech.screen.page.url()).toContain('/tech/');
 
-    const office = h.screens().find((s) => s.persona.id === 'demo-shop-ana')!.id;
+    // The day began when the scenario said, and the cast signed in on it.
+    const ana = h.screens().find((s) => s.persona.id === 'demo-shop-ana')!;
+    const at = await ana.screen.page.evaluate(() => Date.now());
+    expect(at - Date.parse('2030-03-02T16:00:00Z')).toBeGreaterThanOrEqual(0);
+    expect(at - Date.parse('2030-03-02T16:00:00Z')).toBeLessThan(60_000);
+    expect(await ana.screen.page.textContent('main')).toContain('Signed in as Ana');
+    const office = ana.id;
     const logged = await call('finding_log', {
       run,
       title: 'The text never arrives',

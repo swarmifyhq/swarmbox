@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { STARTS_AT } from '../time.ts';
 
 const Slug = z.string().regex(/^[a-z0-9][a-z0-9-]{1,59}$/, 'lowercase letters, digits and dashes');
 
@@ -26,6 +27,12 @@ export const Scenario = z.strictObject({
       seed: z.boolean().default(true),
       /** Run on a kept world (world/kept.ts) instead of a fresh one. */
       keep: Slug.optional(),
+      /**
+       * When the world's day starts, in the first tenant's zone: "09:00" (the next one), or
+       * "2026-10-31 23:30" for a test across a date or a time change. The clock moves there before anyone
+       * signs in. Needs the product's hooks. Default: this machine's now.
+       */
+      startsAt: z.string().regex(STARTS_AT, '"HH:MM" or "YYYY-MM-DD HH:MM"').optional(),
     })
     .default({ seed: true }),
   /** Who is on a screen: a role each, the first person holding it (a second of the same role, the second). */

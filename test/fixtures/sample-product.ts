@@ -97,8 +97,10 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
         const path = url.pathname.slice('/_sandbox'.length);
         if (path === '/health') return json(200, { ok: true, result: {} });
         if (path === '/clock') {
-          if (req.method === 'POST')
-            offsetMs += Number((JSON.parse(body) as { jumpMs?: number }).jumpMs ?? 0);
+          if (req.method === 'POST') {
+            const move = JSON.parse(body) as { jumpMs?: number; to?: string };
+            offsetMs = move.to ? Date.parse(move.to) - Date.now() : offsetMs + Number(move.jumpMs ?? 0);
+          }
           return json(200, {
             ok: true,
             result: {

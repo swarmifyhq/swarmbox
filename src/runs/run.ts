@@ -15,6 +15,7 @@ import { failing, type CheckResult, type Settled } from '../checks.ts';
 import { HarnessError, type Harness, type Signal } from '../harness.ts';
 import type { FindingSink, Persona, ProductWorld, SinkRun } from '../product.ts';
 import { describeProvenance } from '../provenance.ts';
+import { startInstant } from '../time.ts';
 import { loadScenario, type Scenario } from '../scenarios/spec.ts';
 import { openBudget, type Budget } from './budget.ts';
 import { renderReport } from './report.ts';
@@ -140,8 +141,16 @@ export function createRuns<W extends ProductWorld>(
         ...(scenario.world.keep ? { keep: scenario.world.keep } : {}),
       });
       try {
-        // The cast, by role: the first person holding it, the second for a second of the same role.
         const people = await h.people(w.id);
+        // The day starts where the scenario says, before anyone signs in, in the first tenant's zone.
+        if (scenario.world.startsAt) {
+          const tenant = scenario.cast[0]?.tenant ?? w.world.tenants[0];
+          const zone = people.find((p) => p.tenant === tenant)?.timeZone ?? 'UTC';
+          const now = new Date((await h.moveClock(w.id)).process.at);
+          const to = startInstant(scenario.world.startsAt, zone, now);
+          if (to.getTime() > now.getTime()) await h.moveClock(w.id, { to: to.toISOString() });
+        }
+        // The cast, by role: the first person holding it, the second for a second of the same role.
         const used = new Set<string>();
         const cast: CastMember[] = [];
         for (const c of scenario.cast) {
