@@ -4,7 +4,7 @@ A sandbox where AI agents use your product the way people do: in real browsers, 
 it (a _world_), as each of your roles at once. The agent sees what a person sees and what the server did,
 logs what isn't right, and ends with your checks and a report anyone can read.
 
-Part of [Swarmify](https://github.com/swarmifyhq/swarmify). Private for now.
+Built for Swarmify's agents, and usable by any team whose product runs locally. MIT licensed.
 
 ## What it gives an agent
 
@@ -29,6 +29,15 @@ Part of [Swarmify](https://github.com/swarmifyhq/swarmify). Private for now.
 - **The world's own log** (`world_log`), when the product shares it: the stack behind a screen's
   "something went wrong", while the world runs.
 - **A daily budget** in browser-minutes and runs.
+
+## Install
+
+```sh
+pnpm add -D @swarmifyhq/swarmbox playwright-core
+pnpm exec playwright-core install chromium
+```
+
+`playwright-core` is a peer dependency, so your product and Swarmbox share one copy. Node 24 or later.
 
 ## Plugging a product in
 
@@ -70,3 +79,10 @@ pnpm run test:browser   # everything, the browser tests too
 ```
 
 Node 24. The source runs as TypeScript in tests; the package ships `dist/` (`pnpm run build`).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to send a change, and [SECURITY.md](SECURITY.md) to report a
+security problem.
+
+## Licence
+
+[MIT](LICENSE).
