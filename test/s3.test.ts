@@ -3,6 +3,7 @@
 // checksums, ranges, an upload in parts, the browser's preflight, and the refusals a real bucket gives.
 
 import { createHash, createHmac } from 'node:crypto';
+import zlib from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { builtinStandIn } from '../src/standins/builtin/index.ts';
 import { startStandIn, type StandIn } from '../src/standins/runner.ts';
@@ -33,16 +34,24 @@ function sign(
     body?: Buffer;
     presign?: number;
     at?: Date;
+    /** x-amz-content-sha256 as given (a STREAMING- value), or none at all. */
+    payload?: string | null;
+    region?: string;
+    service?: string;
+    /** The credential's date, when not the request's own. */
+    day?: string;
   } = {},
-): Signed {
+): Signed & { signature: string; amzDate: string; scope: string; key: Buffer } {
   const at = o.at ?? new Date();
   const t = amz(at);
-  const day = t.slice(0, 8);
-  const scope = `${day}/auto/s3/aws4_request`;
+  const day = o.day ?? t.slice(0, 8);
+  const region = o.region ?? 'auto';
+  const service = o.service ?? 's3';
+  const scope = `${day}/${region}/${service}/aws4_request`;
   const host = new URL(origin).host;
   const headers: Record<string, string> = { host, ...(o.headers ?? {}) };
   const query: Record<string, string> = { ...(o.query ?? {}) };
-  const payload = o.presign ? 'UNSIGNED-PAYLOAD' : sha(o.body ?? '');
+  const payload = o.payload ?? (o.presign ? 'UNSIGNED-PAYLOAD' : sha(o.body ?? ''));
   if (o.presign) {
     Object.assign(query, {
       'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
@@ -54,7 +63,10 @@ function sign(
         .sort()
         .join(';'),
     });
-  } else Object.assign(headers, { 'x-amz-date': t, 'x-amz-content-sha256': payload });
+  } else {
+    headers['x-amz-date'] = t;
+    if (o.payload !== null) headers['x-amz-content-sha256'] = payload;
+  }
   const names = Object.keys(headers)
     .map((k) => k.toLowerCase())
     .sort();
@@ -73,7 +85,7 @@ function sign(
   ].join('\n');
   const toSign = ['AWS4-HMAC-SHA256', t, scope, sha(canonical)].join('\n');
   let key: Buffer = createHmac('sha256', `AWS4${creds.secretAccessKey}`).update(day).digest();
-  for (const part of ['auto', 's3', 'aws4_request']) key = createHmac('sha256', key).update(part).digest();
+  for (const part of [region, service, 'aws4_request']) key = createHmac('sha256', key).update(part).digest();
   const signature = createHmac('sha256', key).update(toSign).digest('hex');
   if (o.presign) {
     query['X-Amz-Signature'] = signature;
@@ -83,6 +95,10 @@ function sign(
     return {
       url: `${origin}${path}?${qs}`,
       headers: Object.fromEntries(Object.entries(headers).filter(([k]) => k !== 'host')),
+      signature,
+      amzDate: t,
+      scope,
+      key,
     };
   }
   headers.authorization = `AWS4-HMAC-SHA256 Credential=${creds.accessKeyId}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`;
@@ -90,8 +106,74 @@ function sign(
   return {
     url: `${origin}${path}${qs}`,
     headers: Object.fromEntries(Object.entries(headers).filter(([k]) => k !== 'host')),
+    signature,
+    amzDate: t,
+    scope,
+    key,
   };
 }
+
+/** One chunk's signature, as AWS documents signed streaming uploads; `trailer` for the trailing headers'. */
+const chunkSignature = (
+  key: Buffer,
+  amzDate: string,
+  scope: string,
+  prev: string,
+  data: Buffer | string,
+  kind: 'PAYLOAD' | 'TRAILER' = 'PAYLOAD',
+) =>
+  createHmac('sha256', key)
+    .update(
+      [
+        `AWS4-HMAC-SHA256-${kind}`,
+        amzDate,
+        scope,
+        prev,
+        ...(kind === 'PAYLOAD' ? [sha('')] : []),
+        sha(data),
+      ].join('\n'),
+    )
+    .digest('hex');
+
+/** A body framed aws-chunked, every chunk signed in turn, with a signed trailer when one is given. */
+function chunked(
+  s: { key: Buffer; amzDate: string; scope: string; signature: string },
+  pieces: Buffer[],
+  trailer?: string,
+): Buffer {
+  let prev = s.signature;
+  const out: Buffer[] = [];
+  for (const p of [...pieces, Buffer.alloc(0)]) {
+    prev = chunkSignature(s.key, s.amzDate, s.scope, prev, p);
+    out.push(Buffer.from(`${p.length.toString(16)};chunk-signature=${prev}\r\n`), p);
+    if (p.length) out.push(Buffer.from('\r\n'));
+  }
+  if (trailer === undefined) out.push(Buffer.from('\r\n'));
+  else {
+    const t = chunkSignature(s.key, s.amzDate, s.scope, prev, `${trailer}\n`, 'TRAILER');
+    out.push(Buffer.from(`${trailer}\r\nx-amz-trailer-signature:${t}\r\n\r\n`));
+  }
+  return Buffer.concat(out);
+}
+
+describe('signed streaming, as AWS documents it', () => {
+  it('signs chunks to AWS’s own example values', () => {
+    let key = createHmac('sha256', 'AWS4wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
+      .update('20130524')
+      .digest();
+    for (const p of ['us-east-1', 's3', 'aws4_request']) key = createHmac('sha256', key).update(p).digest();
+    const scope = '20130524/us-east-1/s3/aws4_request';
+    let prev = '4f232c4386841ef735655705268965c44a0e4690baa4adea153f7db9fa80a0a9';
+    const got = [65536, 1024, 0].map(
+      (n) => (prev = chunkSignature(key, '20130524T000000Z', scope, prev, Buffer.alloc(n, 'a'))),
+    );
+    expect(got).toEqual([
+      'ad80c730a21e5b8d04586a2213dd63b9a0e99e0e2307b0ade35a65485a288648',
+      '0055627c9e194cb4542bae2aa5492e3c1575bbb81b612b7d234b86a503ef5497',
+      'b6c6ea8a5354eaf15b3cb7646744f4275b71ea724fed81ceb9323e279d449df9',
+    ]);
+  });
+});
 
 describe('the S3 stand-in', () => {
   let s3: StandIn;
@@ -139,9 +221,9 @@ describe('the S3 stand-in', () => {
     });
     expect(head.status).toBe(200);
     expect(head.headers.get('content-length')).toBe(String(body.length));
-    expect(head.headers.get('x-amz-checksum-sha256')).toBe(
-      createHash('sha256').update(body).digest('base64'),
-    );
+    // No checksum sent, so S3's own: a CRC64NVME of the whole object (the SDK test checks its value).
+    expect(head.headers.get('x-amz-checksum-crc64nvme')).toMatch(/^[A-Za-z0-9+/]{11}=$/);
+    expect(head.headers.get('x-amz-checksum-type')).toBe('FULL_OBJECT');
     expect(await (await go('GET', '/files/t/acme/backup.txt')).text()).toBe(body.toString());
     const part = await go('GET', '/files/t/acme/backup.txt', { headers: { range: 'bytes=4-9' } });
     expect(part.status).toBe(206);
@@ -203,7 +285,8 @@ describe('the S3 stand-in', () => {
     const xml = async (r: Response) => r.text();
     const start = await xml(await go('POST', '/files/t/acme/video.mp4', { query: { uploads: '' } }));
     const uploadId = /<UploadId>([^<]+)<\/UploadId>/.exec(start)![1]!;
-    const parts = [Buffer.alloc(5 * 1024, 1), Buffer.alloc(1024, 2)];
+    // S3's rule: every part but the last at least 5 MB.
+    const parts = [Buffer.alloc(5 * 1024 * 1024, 1), Buffer.alloc(1024, 2)];
     const etags: string[] = [];
     for (const [i, p] of parts.entries()) {
       const r = await go('PUT', '/files/t/acme/video.mp4', {
@@ -218,9 +301,16 @@ describe('the S3 stand-in', () => {
     const unfinished = await xml(await go('GET', '/files/', { query: { uploads: '', prefix: 't/acme/' } }));
     expect(unfinished).toContain(`<UploadId>${uploadId}</UploadId>`);
 
-    const done = Buffer.from(
-      `<CompleteMultipartUpload>${etags.map((e, i) => `<Part><PartNumber>${i + 1}</PartNumber><ETag>${e}</ETag></Part>`).join('')}</CompleteMultipartUpload>`,
-    );
+    const complete = (order: number[]) =>
+      Buffer.from(
+        `<CompleteMultipartUpload>${order.map((n) => `<Part><PartNumber>${n}</PartNumber><ETag>${etags[n - 1]}</ETag></Part>`).join('')}</CompleteMultipartUpload>`,
+      );
+    const backwards = await go('POST', '/files/t/acme/video.mp4', {
+      query: { uploadId },
+      body: complete([2, 1]),
+    });
+    expect(await xml(backwards)).toContain('<Code>InvalidPartOrder</Code>');
+    const done = complete([1, 2]);
     const joined = await xml(
       await go('POST', '/files/t/acme/video.mp4', { query: { uploadId }, body: done }),
     );
@@ -229,6 +319,28 @@ describe('the S3 stand-in', () => {
     const back = Buffer.from(await (await go('GET', '/files/t/acme/video.mp4')).arrayBuffer());
     expect(back.equals(Buffer.concat(parts))).toBe(true);
 
+    // A small part anywhere but last is refused, as S3 refuses it.
+    const small = /<UploadId>([^<]+)<\/UploadId>/.exec(
+      await xml(await go('POST', '/files/t/acme/small.bin', { query: { uploads: '' } })),
+    )![1]!;
+    const smallTags: string[] = [];
+    for (const n of [1, 2])
+      smallTags.push(
+        (
+          await go('PUT', '/files/t/acme/small.bin', {
+            query: { partNumber: String(n), uploadId: small },
+            body: Buffer.alloc(1024, n),
+          })
+        ).headers.get('etag')!,
+      );
+    const tooSmall = await go('POST', '/files/t/acme/small.bin', {
+      query: { uploadId: small },
+      body: Buffer.from(
+        `<CompleteMultipartUpload>${smallTags.map((e, i) => `<Part><PartNumber>${i + 1}</PartNumber><ETag>${e}</ETag></Part>`).join('')}</CompleteMultipartUpload>`,
+      ),
+    });
+    expect(await xml(tooSmall)).toContain('<Code>EntityTooSmall</Code>');
+
     const another = /<UploadId>([^<]+)<\/UploadId>/.exec(
       await xml(await go('POST', '/files/t/acme/v2.mp4', { query: { uploads: '' } })),
     )![1]!;
@@ -236,6 +348,115 @@ describe('the S3 stand-in', () => {
     expect(
       await xml(await go('GET', '/files/', { query: { uploads: '', prefix: 't/acme/' } })),
     ).not.toContain(another);
+  });
+
+  it('takes a signed aws-chunked upload, checks every chunk’s signature and the trailer’s, and stores the bytes', async () => {
+    const pieces = [Buffer.alloc(9000, 'x'), Buffer.from('the end')];
+    const bytes = Buffer.concat(pieces);
+    const put = async (payload: string, frame: (s: ReturnType<typeof sign>) => Buffer, extra = {}) => {
+      const headers = {
+        'content-encoding': 'aws-chunked',
+        'x-amz-decoded-content-length': String(bytes.length),
+        ...extra,
+      };
+      const s = sign(creds, 'PUT', s3.baseUrls.endpoint!, '/files/t/acme/chunked.bin', { headers, payload });
+      return fetch(s.url, { method: 'PUT', headers: s.headers, body: new Uint8Array(frame(s)) });
+    };
+    const plain = await put('STREAMING-AWS4-HMAC-SHA256-PAYLOAD', (s) => chunked(s, pieces));
+    expect(plain.status).toBe(200);
+    expect(
+      Buffer.from(await (await go('GET', '/files/t/acme/chunked.bin')).arrayBuffer()).equals(bytes),
+    ).toBe(true);
+
+    const crc = zlib.crc32(bytes);
+    const crc32 = Buffer.from([crc >>> 24, (crc >>> 16) & 255, (crc >>> 8) & 255, crc & 255]).toString(
+      'base64',
+    );
+    const trailed = await put(
+      'STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER',
+      (s) => chunked(s, pieces, `x-amz-checksum-crc32:${crc32}`),
+      { 'x-amz-trailer': 'x-amz-checksum-crc32' },
+    );
+    expect(trailed.status).toBe(200);
+    expect(trailed.headers.get('x-amz-checksum-crc32')).toBe(crc32);
+    const wrongSum = await put(
+      'STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER',
+      (s) => chunked(s, pieces, 'x-amz-checksum-crc32:AAAAAA=='),
+      { 'x-amz-trailer': 'x-amz-checksum-crc32' },
+    );
+    expect(await wrongSum.text()).toContain('<Code>BadDigest</Code>');
+
+    // A chunk changed after signing, or a chunk signed out of turn, is refused.
+    const tampered = await put('STREAMING-AWS4-HMAC-SHA256-PAYLOAD', (s) => {
+      const b = chunked(s, pieces);
+      b[b.indexOf('x')] = 'y'.charCodeAt(0);
+      return b;
+    });
+    expect(await tampered.text()).toContain('<Code>SignatureDoesNotMatch</Code>');
+    // Chunks chained from another request's signature: each is signed right, but not in this request's turn.
+    const replayed = await put('STREAMING-AWS4-HMAC-SHA256-PAYLOAD', (s) =>
+      chunked({ ...s, signature: 'f'.repeat(64) }, pieces),
+    );
+    expect(await replayed.text()).toContain('<Code>SignatureDoesNotMatch</Code>');
+    const short = await put('STREAMING-AWS4-HMAC-SHA256-PAYLOAD', (s) => chunked(s, pieces).subarray(0, 100));
+    expect(await short.text()).toContain('<Code>IncompleteBody</Code>');
+  });
+
+  it('enforces CRC32C and CRC64NVME, and one checksum at a time', async () => {
+    const body = Buffer.from('123456789');
+    const ok = await go('PUT', '/files/t/acme/check.txt', {
+      body,
+      headers: { 'x-amz-checksum-crc32c': Buffer.from('e3069283', 'hex').toString('base64') },
+    });
+    expect(ok.status).toBe(200);
+    const crc64 = await go('PUT', '/files/t/acme/check.txt', {
+      body,
+      headers: { 'x-amz-checksum-crc64nvme': Buffer.from('ae8b14860a799888', 'hex').toString('base64') },
+    });
+    expect(crc64.status).toBe(200);
+    const bad = await go('PUT', '/files/t/acme/check.txt', {
+      body,
+      headers: { 'x-amz-checksum-crc32c': 'AAAAAA==' },
+    });
+    expect(await bad.text()).toContain('The CRC32C you specified did not match');
+    const two = await go('PUT', '/files/t/acme/check.txt', {
+      body,
+      headers: {
+        'x-amz-checksum-crc32c': Buffer.from('e3069283', 'hex').toString('base64'),
+        'x-amz-checksum-crc32': Buffer.from('cbf43926', 'hex').toString('base64'),
+      },
+    });
+    expect(await two.text()).toContain('Multiple checksum Types are not allowed');
+  });
+
+  it('holds signatures to S3’s rules: date, region, service, a week at most, the payload header', async () => {
+    const code = async (o: Parameters<typeof sign>[4]) => {
+      const r = sign(creds, 'GET', s3.baseUrls.endpoint!, '/files/t/acme/check.txt', o);
+      return /<Code>([^<]+)<\/Code>/.exec(await (await fetch(r.url, { headers: r.headers })).text())?.[1];
+    };
+    expect(await code({ day: '20200101' })).toBe('AuthorizationHeaderMalformed');
+    expect(await code({ region: 'us-east-1' })).toBe('AuthorizationHeaderMalformed');
+    expect(await code({ service: 'dynamodb' })).toBe('AuthorizationHeaderMalformed');
+    expect(await code({ payload: null })).toBe('InvalidRequest');
+    expect(await code({ presign: 604_801 })).toBe('AuthorizationQueryParametersError');
+    expect(await code({ presign: 604_800 })).toBe(undefined);
+  });
+
+  it('keeps each account to its own buckets, and answers a path that won’t decode as S3 does', async () => {
+    const other = (await s3.account('other')) as typeof creds;
+    const theirs = sign(other, 'GET', s3.baseUrls.endpoint!, '/files/t/acme/check.txt');
+    expect(await (await fetch(theirs.url, { headers: theirs.headers })).text()).toContain(
+      '<Code>AccessDenied</Code>',
+    );
+    const taken = sign(other, 'PUT', s3.baseUrls.endpoint!, '/files');
+    expect(await (await fetch(taken.url, { method: 'PUT', headers: taken.headers })).text()).toContain(
+      'BucketAlreadyExists',
+    );
+    const r = sign(creds, 'GET', s3.baseUrls.endpoint!, '/files/a');
+    const odd = await fetch(r.url.replace('/files/a', '/files/%E0%A4%A'), { headers: r.headers });
+    expect(odd.status).toBe(400);
+    expect(await odd.text()).toContain('<Code>InvalidURI</Code>');
+    expect(s3.stopped()).toBeNull();
   });
 
   it('answers a browser’s preflight from the world’s own hosts, and nobody else’s', async () => {
