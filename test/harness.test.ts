@@ -169,6 +169,11 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     // A day on, past the twelve-hour session it opened with: still signed in, as a person who kept using it.
     await s.screen.page.reload();
     expect(await s.screen.page.textContent('main')).toContain('Signed in as Ana');
+    // A screen opened now starts on the world's day from its first script, not this machine's.
+    const later = await call('screen_open', { world, person: 'north-ana' });
+    const page = h.screen(/^screen (s\d+)/.exec(later.text)![1]!).screen.page;
+    const started = await page.evaluate(() => (window as unknown as { startedAt: number }).startedAt);
+    expect(started - before).toBeGreaterThan(86_000_000);
   });
 
   it('runs the product’s checks', async () => {

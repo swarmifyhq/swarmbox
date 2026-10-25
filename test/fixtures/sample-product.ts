@@ -45,6 +45,8 @@ const page = (
   <label>To <input name="to" value="+15550100"></label>
   <button type="button" id="cancel">Cancel</button><button type="button" id="send">Send</button></dialog>
 <script>
+  // What "now" was as the page started, as an app that reads today once would see it.
+  window.startedAt = Date.now();
   const d = document.getElementById('d');
   document.getElementById('open').onclick = () => d.showModal();
   document.getElementById('cancel').onclick = () => d.close();

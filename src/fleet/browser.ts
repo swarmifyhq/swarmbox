@@ -97,6 +97,8 @@ export interface Fleet {
       address?: string;
       /** Called with the new context before it loads anything, so nothing it does is missed. */
       onContext?: (context: BrowserContext) => void;
+      /** The world's time, when its clock has moved: the page starts on it, not on this machine's. */
+      clock?: { at: string; paused: boolean };
     },
   ): Promise<Screen>;
   originFor(tenant: string): string;
@@ -157,7 +159,7 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
      * the same path a real client's takes. Defaults come from 198.18.0.0/15, a range reserved for testing.
      * Giving several screens one address is how a crew behind one router is simulated.
      */
-    async open(who, path = '/', { address, onContext, device, colorScheme } = {}) {
+    async open(who, path = '/', { address, onContext, device, colorScheme, clock } = {}) {
       const signIn = who.signIn;
       const localStorage = signIn?.localStorage;
       const viewport = signIn?.viewport;
@@ -200,6 +202,12 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
       onContext?.(context);
+      // Before the first page: an app that reads "today" as it starts would otherwise draw this machine's
+      // date, or the epoch, until something made it look again.
+      if (clock) {
+        if (clock.paused) await context.clock.setFixedTime(new Date(clock.at));
+        else await context.clock.setSystemTime(new Date(clock.at));
+      }
       const page = await context.newPage();
       // load, not domcontentloaded: an app drawn by its scripts is drawn after the HTML.
       await page.goto(path, { waitUntil: 'load' });
