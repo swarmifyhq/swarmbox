@@ -3,7 +3,7 @@
 // the log, inbound, the clock, and what a hostile stand-in can't do.
 
 import { createHmac } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -40,14 +40,30 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((r) => product.close(() => r())));
 
+/** Whether a process still runs: on Linux a killed one may linger as a zombie until something reaps it (in a CI
+ * container, PID 1 often never does), and kill(pid, 0) still succeeds on a zombie, so read its state instead. */
+const running = (pid: number): boolean => {
+  if (process.platform === 'linux') {
+    let stat: string;
+    try {
+      stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    } catch {
+      return false;
+    }
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /** Whether a process is gone within two seconds: a SIGKILL lands at once, its exit a moment later. */
 const gone = async (pid: number) => {
   for (let i = 0; i < 40; i++) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true;
-    }
+    if (!running(pid)) return true;
     await new Promise((r) => setTimeout(r, 50));
   }
   return false;
