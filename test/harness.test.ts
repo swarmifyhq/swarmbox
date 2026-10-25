@@ -4,6 +4,8 @@
 // agent uses. Needs Chromium (pnpm exec playwright install chromium).
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -209,7 +211,35 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await expect
       .poll(() => page.locator('#payment').textContent())
       .toBe('https://secure.helcim.app SUCCESS 135.45');
+
+    // The stand-in's code now runs in the browser, so the browser stays in the world: a server on this machine
+    // that Node reaches is out of reach from the page and from the provider's frame, as is the internet.
+    const outside = http.createServer((_q, res) => res.end('reached'));
+    await new Promise<void>((done) => outside.listen(0, '127.0.0.1', done));
+    const there = `http://127.0.0.1:${(outside.address() as AddressInfo).port}/`;
+    try {
+      expect(await (await fetch(there)).text()).toBe('reached');
+      const tryFetch = (url: string) =>
+        fetch(url, { mode: 'no-cors' }).then(
+          () => 'reached',
+          () => 'blocked',
+        );
+      expect(await page.evaluate(tryFetch, there)).toBe('blocked');
+      const frame = page.frames().find((f) => f.url().startsWith('https://secure.helcim.app/'))!;
+      expect(await frame.evaluate(tryFetch, there)).toBe('blocked');
+      expect(await frame.evaluate(tryFetch, 'https://example.com/')).toBe('blocked');
+    } finally {
+      outside.close();
+    }
     await call('world_destroy', { world: w });
+  });
+
+  it('refuses a stand-in that asks to play an origin nobody approved', async () => {
+    const before = h.worlds().length;
+    const made = await call('world_create', { tenants: ['south'], standins: ['lurker'] });
+    expect(made.error).toBe(true);
+    expect(made.text).toContain('asks to play https://cdn.example.com in the browser');
+    expect(h.worlds().length).toBe(before);
   });
 
   it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {

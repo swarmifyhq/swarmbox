@@ -7,6 +7,7 @@ import { withJpegComment, withPngText } from '../../src/device/props.ts';
 import { assertNoStandins, isThisMachine, standInLeaks } from '../../src/standins/guard.ts';
 import { Manifest, matchPath, operationOf } from '../../src/standins/manifest.ts';
 import { ppidOfStat, sandboxHooks } from '../../src/standins/runner.ts';
+import { insideWorld } from '../../src/fleet/browser.ts';
 import { hexId, makeCredential } from '../../src/standins/sdk.ts';
 
 const base = {
@@ -165,5 +166,57 @@ describe('a delivery to the product’s sandbox hooks', () => {
       expect(sandboxHooks(path), path).toBe(true);
     for (const path of ['/', '/hooks/resend', '/v1/accounts/AC1/messages', '/sandbox'])
       expect(sandboxHooks(path), path).toBe(false);
+  });
+});
+
+describe('provider origins in the browser', () => {
+  it('are exact https origins, never a pattern', () => {
+    const withOrigins = (origins: string[]) => ({
+      ...base,
+      connect: { baseUrls: { api: '/' }, browser: { origins } },
+    });
+    expect(Manifest.parse(withOrigins(['https://secure.helcim.app'])).connect.browser?.origins).toEqual([
+      'https://secure.helcim.app',
+    ]);
+    for (const bad of [
+      'https://*',
+      'https://*.example.com',
+      'https://{a,b}.com',
+      'https://a?.com',
+      'https://[ab].com',
+      'https://pay.example.com/checkout',
+      'https://Pay.Example.com',
+      'http://pay.example.com',
+      'https://localhost',
+    ])
+      expect(() => Manifest.parse(withOrigins([bad])), bad).toThrow();
+  });
+
+  it('keep a world’s browsers inside it once a provider’s pages are played there', () => {
+    const options = {
+      baseDomain: 'sample.test',
+      port: 3094,
+      routes: [{ origin: 'https://secure.helcim.app', to: 'http://127.0.0.1:5001' }],
+      allowOrigins: ['http://127.0.0.1:5002', 'https://fonts.example.net'],
+    };
+    for (const url of [
+      'http://acme.sample.test:3094/jobs',
+      'http://sample.test:3094/',
+      'ws://acme.sample.test:3094/live',
+      'https://secure.helcim.app/helcim-pay/services/start.js',
+      'http://127.0.0.1:5002/files/a',
+      'https://fonts.example.net/a.woff2',
+      'data:text/plain,hi',
+    ])
+      expect(insideWorld(url, options), url).toBe(true);
+    for (const url of [
+      'https://accounts.google.com/',
+      'http://127.0.0.1:8791/',
+      'http://acme.sample.test:3095/',
+      'https://acme.sample.test:3094/',
+      'https://secure.helcim.app.evil.com/',
+      'wss://evil.example/',
+    ])
+      expect(insideWorld(url, options), url).toBe(false);
   });
 });

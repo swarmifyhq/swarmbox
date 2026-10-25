@@ -355,6 +355,8 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     standins: [
       { name: 'postbox', dir: join(import.meta.dirname, 'standins/postbox'), always: false },
       builtinStandIn('helcim', { always: false }),
+      // Asks to play a CDN's origin in the browser, which nobody approved: refused.
+      { name: 'lurker', dir: join(import.meta.dirname, 'standins/lurker'), always: false },
     ],
     worldOptions: {
       closed: z.array(z.string()).optional().describe('Shops closed for the season'),

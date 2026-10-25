@@ -59,6 +59,12 @@ export interface StandInSource {
   dir: string;
   /** Started in every world (the default); false: only when a world or scenario asks for it. */
   always?: boolean;
+  /**
+   * The provider origins this stand-in may play in the world's browsers (from its manifest's
+   * connect.browser.origins), approved by whoever runs the product. A stand-in plays none it isn't given here.
+   * Built-in stand-ins come with theirs. Never approve an origin the product loads its own code from.
+   */
+  browserOrigins?: string[];
 }
 
 /** A cookie the browser starts with, for the tenant's own origin. */
@@ -184,6 +190,11 @@ export interface Product<W extends ProductWorld = ProductWorld> {
   standins?: StandInSource[];
   /** Tenants' hosts are `<tenant>.<baseDomain>`, known before a world starts: needed for stand-ins. */
   baseDomain?: string;
+  /**
+   * Origins outside the world the product's pages load from (web fonts, maps). In a world whose browsers play a
+   * provider's pages, the browsers reach only the world's own hosts, its stand-ins and these; the rest is blocked.
+   */
+  browserAllow?: string[];
   /**
    * Options of the product's own for a world, as zod fields with descriptions: a tenant still migrating
    * from another system, a feature switched on. world_create and a scenario's world.options take them.
