@@ -54,6 +54,9 @@ interface Call {
   parent: string | null;
   /** Set while a held call rings: the caller hanging up ends it. */
   hangUp?: () => void;
+  /** What happened, in order, as the call ran; done once it ended. */
+  steps: string[];
+  done: boolean;
 }
 interface Recording {
   sid: string;
@@ -137,7 +140,8 @@ interface Verb {
 }
 /** The verbs of a <Response>, with their attributes and text (enough of TwiML for Dial, Say, Record, Reject, Hangup). */
 export function parseTwiml(xml: string): Verb[] {
-  const body = /<Response\b[^>]*>([\s\S]*?)<\/Response>/.exec(xml)?.[1] ?? '';
+  // A product's TwiML is short; past 64 KB it isn't read, so a malformed one can't make the pattern below slow.
+  const body = /<Response\b[^>]*>([\s\S]*?)<\/Response>/.exec(xml.slice(0, 64 * 1024))?.[1] ?? '';
   const verbs: Verb[] = [];
   const re = /<([A-Z][a-zA-Z]*)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/g;
   for (let m = re.exec(body); m; m = re.exec(body)) {
@@ -171,7 +175,7 @@ async function runCall(
   ringMs: number,
 ): Promise<string[]> {
   const account = call.account;
-  const steps: string[] = [];
+  const steps = call.steps;
   const base = (status: string): Record<string, string> => ({
     CallSid: call.sid,
     AccountSid: account.accountSid,
@@ -230,19 +234,19 @@ async function runCall(
             parent: call.sid,
             duration: plan.talkSec,
             status: 'completed',
+            steps: [],
+            done: true,
           });
           if (verb.attrs.record?.startsWith('record-from')) {
             const rec = record(call, plan.talkSec, verb.attrs.record.endsWith('dual') ? 2 : 1);
             params.RecordingSid = rec.sid;
-            params.RecordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${account.accountSid}/Recordings/${rec.sid}`;
+            params.RecordingUrl = `${ctx.origin}/2010-04-01/Accounts/${account.accountSid}/Recordings/${rec.sid}`;
             params.RecordingDuration = String(rec.duration);
           }
         }
         steps.push(`dialled ${verb.text}: ${outcome}`);
-        if (!verb.attrs.action) {
-          if (outcome === 'completed') break run;
-          continue;
-        }
+        // With no action, Twilio goes on to the next verb, whatever the dial's outcome.
+        if (!verb.attrs.action) continue;
         answer = await webhook(ctx, account, new URL(verb.attrs.action, voiceUrl).toString(), params);
         steps.push(`dial action: ${answer.status}`);
         continue run;
@@ -252,15 +256,16 @@ async function runCall(
           steps.push('asked to leave a message: left none');
           continue;
         }
-        const max = Number(verb.attrs.maxLength ?? 3600);
-        const rec = record(call, Math.min(plan.messageSec, max), 1);
+        const max = Number(verb.attrs.maxLength);
+        const limit = Number.isFinite(max) && max > 0 ? max : 3600;
+        const rec = record(call, Math.min(plan.messageSec, limit), 1);
         call.duration += rec.duration;
         steps.push(`left a ${rec.duration} s message`);
         if (!verb.attrs.action) continue;
         answer = await webhook(ctx, account, new URL(verb.attrs.action, voiceUrl).toString(), {
           ...base('in-progress'),
           RecordingSid: rec.sid,
-          RecordingUrl: `https://api.twilio.com/2010-04-01/Accounts/${account.accountSid}/Recordings/${rec.sid}`,
+          RecordingUrl: `${ctx.origin}/2010-04-01/Accounts/${account.accountSid}/Recordings/${rec.sid}`,
           RecordingDuration: String(rec.duration),
           Digits: 'hangup',
         });
@@ -281,6 +286,7 @@ async function runCall(
     });
     steps.push(`status ${ended}: ${done.status}`);
   }
+  call.done = true;
   return steps;
 }
 
@@ -483,6 +489,8 @@ defineStandIn({
         started: ctx.now(),
         duration: 0,
         parent: null,
+        steps: [],
+        done: false,
       };
       calls.set(call.sid, call);
       const answer = ['answered', 'no-answer', 'busy'].includes(String(body.answer))
@@ -496,14 +504,24 @@ defineStandIn({
       };
       const held = body.hold === true || body.hold === 'true';
       const ringMs = Math.max(0, Number(body.ringMs ?? 3000) || 0);
-      const running = runCall(ctx, call, plan, held, ringMs);
-      // A held call is still ringing when this answers; the rest runs after a hangup.
-      if (held) {
-        running.catch(() => undefined);
-        return { call: call.sid, status: 'ringing' };
-      }
-      const steps = await running;
-      return { call: call.sid, status: call.status, steps };
+      // Answered at once: a call can ring and run longer than Swarmbox waits for an answer. Its steps come with
+      // call-status, and the log has every webhook.
+      void runCall(ctx, call, plan, held, ringMs).catch((e: Error) => {
+        call.steps.push(`stopped: ${e.message}`);
+        call.done = true;
+      });
+      return { call: call.sid, status: 'ringing', held };
+    },
+    'call-status'(body) {
+      const call = calls.get(String(body.call));
+      if (!call) throw new Error(`no call ${String(body.call)}`);
+      return {
+        call: call.sid,
+        status: call.status,
+        done: call.done,
+        duration: call.duration,
+        steps: call.steps,
+      };
     },
     hangup(body) {
       const call = calls.get(String(body.call));
