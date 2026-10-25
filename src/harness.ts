@@ -440,8 +440,11 @@ export function createHarness<W extends ProductWorld>(
       });
       return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map(), standins };
     } catch (e) {
-      await world.stop();
-      await stopStandIns(standins);
+      try {
+        await world.stop();
+      } finally {
+        await stopStandIns(standins);
+      }
       throw e;
     }
   }

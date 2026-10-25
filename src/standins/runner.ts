@@ -367,6 +367,16 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
   // Rules: the general ones Swarmbox applies here; the rest go to the stand-in, which Swarmbox counts by id.
   let rules: Rule[] = [];
   const ownRules = new Set<string>();
+  let ownPending = 0;
+  /** Its own rules as it reports them (behave and unbehave answer with the list): ids only, at most the cap. */
+  const ownFrom = (answer: unknown) => {
+    if (!Array.isArray(answer)) return;
+    ownRules.clear();
+    for (const r of answer.slice(0, RULES_KEPT))
+      if (isObject(r) && typeof r.id === 'string' && r.id.length <= 40) ownRules.add(r.id);
+  };
+  const refreshOwn = async () =>
+    ownFrom(await ask({ type: 'unbehave', id: id(), ruleId: '-' }, 'listing behaviours').catch(() => null));
   const takeGeneral = (
     behaviour: Behaviour,
     operation: string | null,
@@ -709,10 +719,14 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       Object.entries(manifest.connect.baseUrls).map(([k, p]) => [k, `${origin}${p === '/' ? '' : p}`]),
     ),
     async account(tenant) {
-      const creds = shapeAccount(
-        await ask({ type: 'account', id: id(), tenant }, 'an account'),
-        manifest.accounts.fields,
-      );
+      const made = await ask({ type: 'account', id: id(), tenant }, 'an account');
+      let creds: Record<string, string>;
+      try {
+        creds = shapeAccount(made, manifest.accounts.fields);
+      } catch (e) {
+        // What's wrong names the stand-in's own fields: its words, so framed as its refusal.
+        throw new StandInError(manifest.name, 'an account', plain((e as Error).message));
+      }
       accounts.set(tenant, creds);
       return creds;
     },
@@ -721,7 +735,9 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
         throw new Error(
           `${manifest.name} doesn't support "${input.behaviour}"; it supports ${manifest.behaviours.join(', ')}`,
         );
-      if (rules.length + ownRules.size >= RULES_KEPT)
+      // The stand-in's own count goes stale as its counted rules run out: ask it before refusing.
+      if (rules.length + ownRules.size + ownPending >= RULES_KEPT) await refreshOwn();
+      if (rules.length + ownRules.size + ownPending >= RULES_KEPT)
         throw new Error(`${manifest.name} has ${RULES_KEPT} behaviours applied already: clear some first`);
       const rule: Rule = {
         ...input,
@@ -733,17 +749,20 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       };
       if (GENERAL.includes(rule.behaviour)) rules.push(rule);
       else {
-        await ask({ type: 'behave', id: id(), rule }, 'a behaviour');
-        ownRules.add(rule.id);
+        // Its slot is held while the stand-in answers, so calls at once can't all pass the cap.
+        ownPending++;
+        try {
+          ownFrom(await ask({ type: 'behave', id: id(), rule }, 'a behaviour'));
+        } finally {
+          ownPending--;
+        }
       }
       return rule;
     },
     rules: () => [...rules],
     async clearRules(ruleId) {
       rules = ruleId ? rules.filter((r) => r.id !== ruleId) : [];
-      if (ruleId) ownRules.delete(ruleId);
-      else ownRules.clear();
-      await ask({ type: 'unbehave', id: id(), ruleId: ruleId ?? null }, 'clearing behaviours');
+      ownFrom(await ask({ type: 'unbehave', id: id(), ruleId: ruleId ?? null }, 'clearing behaviours'));
     },
     async inbound(kind, body) {
       if (!manifest.inbound.some((k) => k.kind === kind))
@@ -769,6 +788,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     async reset() {
       rules = [];
       await ask({ type: 'reset', id: id() }, 'a reset');
+      ownRules.clear();
     },
     stopped: () => stoppedWhy,
     folder: tmp,
