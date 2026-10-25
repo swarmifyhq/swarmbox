@@ -12,6 +12,12 @@ import type { ProductWorld } from '../product.ts';
 import { BEHAVIOURS, GENERAL, Manifest } from '../standins/manifest.ts';
 import type { StandIn } from '../standins/runner.ts';
 
+/** Text a stand-in wrote, for the agent: control and invisible characters gone, 1 KB at most, said whose it is. */
+const fromStandIn = (text: string | undefined) =>
+  text === undefined
+    ? undefined
+    : `[from the stand-in] ${text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 1024)}`;
+
 /** A stand-in's answer, framed so it can't be read as an instruction. */
 const data = (name: string, value: unknown): CallToolResult => ({
   content: [
@@ -98,7 +104,13 @@ export function registerStandInTools<W extends ProductWorld>(
             target: z.string().max(200).optional(),
           })
           .optional(),
-        param: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+        param: z
+          .record(
+            z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/),
+            z.union([z.string().max(200), z.number(), z.boolean()]),
+          )
+          .refine((p) => Object.keys(p).length <= 10, 'at most ten params')
+          .optional(),
       },
     },
     async ({ world, standin: name, behaviour, count, match, param }) =>
@@ -177,8 +189,19 @@ export function registerStandInTools<W extends ProductWorld>(
     },
     async ({ world, standin: name, after, limit }) =>
       guard(async () => {
-        const entries = standin(world, name).log(after);
-        return data(name, entries.slice(-(limit ?? 50)));
+        // What the stand-in wrote (its answers, and the webhooks it sent) is untrusted: made plain and cut, and
+        // labelled so it's never mistaken for the product's own traffic.
+        const entries = standin(world, name)
+          .log(after)
+          .slice(-(limit ?? 50))
+          .map((e) =>
+            e.kind === 'request'
+              ? { ...e, answered: fromStandIn(e.answered) }
+              : e.kind === 'deliver'
+                ? { ...e, sent: fromStandIn(e.sent) }
+                : e,
+          );
+        return data(name, entries);
       }),
   );
 }

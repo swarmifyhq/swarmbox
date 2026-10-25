@@ -498,10 +498,14 @@ export function createHarness<W extends ProductWorld>(
   }
 
   async function stopEntry(w: WorldEntry<W>): Promise<void> {
-    for (const s of [...screens.values()].filter((s) => s.worldId === w.id)) await closeEntry(s);
-    await w.fleet.close();
-    await w.world.stop();
-    await stopStandIns(w.standins);
+    try {
+      for (const s of [...screens.values()].filter((s) => s.worldId === w.id)) await closeEntry(s);
+      await w.fleet.close();
+      await w.world.stop();
+    } finally {
+      // Whatever failed before, its stand-ins stop and their folders go: they're processes of their own.
+      await stopStandIns(w.standins);
+    }
   }
 
   /**
@@ -1027,7 +1031,10 @@ export function createHarness<W extends ProductWorld>(
     async shutdown() {
       for (const w of [...worlds.values()]) {
         worlds.delete(w.id);
-        await stopEntry(w).catch(() => undefined);
+        // Every world is stopped whatever one does; a failure is said, not swallowed.
+        await stopEntry(w).catch((e: unknown) =>
+          process.stderr.write(`swarmbox: stopping world ${w.id} failed: ${(e as Error).message}\n`),
+        );
       }
       await product.shutdown?.();
     },

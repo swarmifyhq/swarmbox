@@ -61,6 +61,20 @@ A product can take options of its own for a world (`worldOptions`, as zod fields
 migrating from another system, a feature switched on. `world_create` takes them as `options` and a
 scenario as `world.options`.
 
+### In production
+
+A product that uses stand-ins calls the guard as it starts in production, before it builds any provider client:
+
+```ts
+import { assertNoStandins } from '@swarmifyhq/swarmbox';
+
+if (process.env.NODE_ENV === 'production') assertNoStandins(process.env, { allowLoopback: ['METRICS_URL'] });
+```
+
+It refuses to start with anything a stand-in issued (marked keys, fictional 555-01xx numbers), a provider address on
+this machine however it's written, or Swarmbox's local certificate authority. It names the variable, never its
+value. `allowLoopback` lists variables that really do point at this machine in production.
+
 ### Hooks
 
 A product can serve Swarmbox's hooks (protocol v0, `src/hooks.ts`) in its sandbox worlds: a feed of what the

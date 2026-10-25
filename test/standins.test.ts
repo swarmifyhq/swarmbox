@@ -166,6 +166,21 @@ describe('a stand-in a product talks to as its provider', () => {
     expect(s.log().some((e) => e.behaviour === 'hang')).toBe(true);
   });
 
+  it('caps what a behaviour carries, and how many stay applied', async () => {
+    await expect(s.behave({ behaviour: 'slow', param: { note: 'x'.repeat(201) } })).rejects.toThrow(
+      /200 characters/,
+    );
+    await expect(s.behave({ behaviour: 'slow', param: { 'bad key': 1 } })).rejects.toThrow(
+      /plain identifier/,
+    );
+    await s.clearRules();
+    for (let i = 0; i < 100; i++) await s.behave({ behaviour: 'reject', match: { target: `+1250555${i}` } });
+    await expect(s.behave({ behaviour: 'fail' })).rejects.toThrow(/100 behaviours applied already/);
+    await s.clearRules();
+    await s.behave({ behaviour: 'fail', count: 1 });
+    await s.clearRules();
+  });
+
   it('applies its own behaviours, and refuses ones it doesn’t support', async () => {
     await s.behave({ behaviour: 'reject', count: 1, match: { target: '+12505550199' } });
     const refused = await sendText('+12505550199');

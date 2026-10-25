@@ -17,7 +17,15 @@ import { fileURLToPath } from 'node:url';
 import type { SandboxManager as SandboxManagerApi } from '@anthropic-ai/sandbox-runtime';
 import { GENERAL, Manifest, operationOf, type Behaviour } from './manifest.ts';
 import { decode, encode, type ClockState, type Rule, type ToStandIn } from './protocol.ts';
-import { LIVE_CREDENTIAL, METHODS, plain, shapeAccount, shapeData, shapeHeaders } from './shape.ts';
+import {
+  LIVE_CREDENTIAL,
+  METHODS,
+  plain,
+  shapeAccount,
+  shapeData,
+  shapeHeaders,
+  shapeParam,
+} from './shape.ts';
 
 export interface LogEntry {
   cursor: string;
@@ -34,6 +42,19 @@ export interface LogEntry {
   /** Bodies, cut to 4 KB each: what the product sent, and what it got back (or was delivered). */
   sent?: string;
   answered?: string;
+}
+
+/** A stand-in refused something. `said` is its own words, made plain: shown to anyone only as data. */
+export class StandInError extends Error {
+  readonly standin: string;
+  readonly what: string;
+  readonly said: string;
+  constructor(standin: string, what: string, said: string) {
+    super(`${standin} refused ${what}: ${said}`);
+    this.standin = standin;
+    this.what = what;
+    this.said = said;
+  }
 }
 
 export interface StandInOptions {
@@ -75,6 +96,8 @@ export interface StandIn {
   reset(): Promise<void>;
   /** Null while it runs; why it stopped, once it has. */
   stopped(): string | null;
+  /** Its own folder; removed when it stops. */
+  folder: string;
   stop(): Promise<void>;
 }
 
@@ -118,6 +141,8 @@ const SYSTEM_READS: string[] = [
 /** The kit's own folder: sdk and protocol, which import nothing but Node's built-ins. */
 const KIT_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));
 const LOG_KEPT = 2000;
+/** Behaviours applied at once, per stand-in: a rule with no count stays until it's cleared. */
+const RULES_KEPT = 100;
 /** Refused deliveries logged per minute; past it, one line says how many more there were. */
 const REFUSALS_LOGGED = 100;
 const MAX_LINE = 32 * 1024 * 1024;
@@ -320,7 +345,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     send(m);
     const r = await answer;
     if (r.type !== 'result') throw new Error(`${manifest.name} answered ${what} out of turn`);
-    if (r.ok !== true) throw new Error(`${manifest.name} refused ${what}: ${plain(r.error)}`);
+    if (r.ok !== true) throw new StandInError(manifest.name, what, plain(r.error));
     return r.value;
   };
 
@@ -339,8 +364,9 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     return null;
   };
 
-  // Rules: the general ones Swarmbox applies here; the rest go to the stand-in.
+  // Rules: the general ones Swarmbox applies here; the rest go to the stand-in, which Swarmbox counts by id.
   let rules: Rule[] = [];
+  const ownRules = new Set<string>();
   const takeGeneral = (
     behaviour: Behaviour,
     operation: string | null,
@@ -695,14 +721,28 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
         throw new Error(
           `${manifest.name} doesn't support "${input.behaviour}"; it supports ${manifest.behaviours.join(', ')}`,
         );
-      const rule: Rule = { ...input, id: randomBytes(4).toString('hex') };
+      if (rules.length + ownRules.size >= RULES_KEPT)
+        throw new Error(`${manifest.name} has ${RULES_KEPT} behaviours applied already: clear some first`);
+      const rule: Rule = {
+        ...input,
+        ...(input.param ? { param: shapeParam(input.param) } : {}),
+        ...(input.count !== undefined
+          ? { count: Math.max(1, Math.min(Math.floor(input.count), 100_000)) }
+          : {}),
+        id: randomBytes(4).toString('hex'),
+      };
       if (GENERAL.includes(rule.behaviour)) rules.push(rule);
-      else await ask({ type: 'behave', id: id(), rule }, 'a behaviour');
+      else {
+        await ask({ type: 'behave', id: id(), rule }, 'a behaviour');
+        ownRules.add(rule.id);
+      }
       return rule;
     },
     rules: () => [...rules],
     async clearRules(ruleId) {
       rules = ruleId ? rules.filter((r) => r.id !== ruleId) : [];
+      if (ruleId) ownRules.delete(ruleId);
+      else ownRules.clear();
       await ask({ type: 'unbehave', id: id(), ruleId: ruleId ?? null }, 'clearing behaviours');
     },
     async inbound(kind, body) {
@@ -731,6 +771,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       await ask({ type: 'reset', id: id() }, 'a reset');
     },
     stopped: () => stoppedWhy,
+    folder: tmp,
     async stop() {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));

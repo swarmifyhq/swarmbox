@@ -82,6 +82,7 @@ async function startSample(
   port: number,
   closed: string[] = [],
   texts?: StandInEndpoint,
+  failStop = false,
 ): Promise<SampleWorld> {
   // With the postbox stand-in, each shop has its own account there, and texts really go through it.
   const textAccounts = new Map<string, Record<string, string>>();
@@ -259,7 +260,10 @@ async function startSample(
     // Its server's log is the requests it served, with a line for each refusal.
     log: ({ lines, match }) =>
       requests.filter((l) => !match || l.toLowerCase().includes(match.toLowerCase())).slice(-lines),
-    stop: () => new Promise<void>((r) => server.close(() => r())),
+    stop: async () => {
+      await new Promise<void>((r) => server.close(() => r()));
+      if (failStop) throw new Error('the sample shop would not stop cleanly');
+    },
   };
 }
 
@@ -278,11 +282,15 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         port,
         (spec.options?.closed as string[] | undefined) ?? [],
         spec.endpoints?.postbox,
+        spec.options?.failStop === true,
       ),
     baseDomain: BASE_DOMAIN,
     // Only in a world that asks for it, so the other tests start no stand-in.
     standins: [{ name: 'postbox', dir: join(import.meta.dirname, 'standins/postbox'), always: false }],
-    worldOptions: { closed: z.array(z.string()).optional().describe('Shops closed for the season') },
+    worldOptions: {
+      closed: z.array(z.string()).optional().describe('Shops closed for the season'),
+      failStop: z.boolean().optional().describe('Its stop fails, as a product that won’t shut down cleanly'),
+    },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };
 }

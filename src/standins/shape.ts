@@ -69,6 +69,20 @@ export function shapeData(value: unknown, depth = 0): unknown {
   return null;
 }
 
+/** A behaviour's param: at most ten plain keys, each a number, a boolean, or a string of 200 characters at most. */
+export function shapeParam(param: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(param).slice(0, 10)) {
+    if (!KEY.test(k)) throw new Error('a behaviour param name must be a plain identifier');
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+    else if (typeof v === 'boolean') out[k] = v;
+    else if (typeof v === 'string' && v.length <= 200) out[k] = v;
+    else
+      throw new Error(`behaviour param ${k} must be a number, a boolean, or text of 200 characters at most`);
+  }
+  return out;
+}
+
 /** Real-looking live credentials: a stand-in refuses a request carrying one, and never logs it. */
 export const LIVE_CREDENTIAL = /\b(?:sk|rk|pk)_live_[0-9A-Za-z]{8,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/;
 
