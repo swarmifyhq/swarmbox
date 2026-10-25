@@ -65,7 +65,16 @@ export {
   type Hooks,
 } from './hooks.ts';
 export { describeProvenance, provenance, type Provenance, type ProvenanceOptions } from './provenance.ts';
-export { launchFleet, resolverRule, type Fleet, type Screen, type Who } from './fleet/browser.ts';
+export {
+  DEVICES,
+  launchFleet,
+  resolverRule,
+  type Appearance,
+  type Device,
+  type Fleet,
+  type Screen,
+  type Who,
+} from './fleet/browser.ts';
 export {
   behindModal,
   changes,

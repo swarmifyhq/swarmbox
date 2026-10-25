@@ -15,7 +15,25 @@
 // support parameter properties.
 
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
-import type { Persona, SignIn } from '../product.ts';
+import type { Persona, SignIn, StartCookie } from '../product.ts';
+
+/** A sign-in's cookies, on the tenant's own origin: how a screen is signed in, and kept signed in. */
+export async function setCookies(
+  context: BrowserContext,
+  origin: string,
+  cookies: StartCookie[],
+): Promise<void> {
+  await context.addCookies(
+    cookies.map((c) => ({
+      name: c.name,
+      value: c.value,
+      url: origin,
+      httpOnly: c.httpOnly ?? true,
+      secure: false,
+      sameSite: c.sameSite ?? 'Lax',
+    })),
+  );
+}
 
 /** Makes `*.{baseDomain}` resolve to loopback inside this browser, and nowhere else on the machine. */
 export function resolverRule(baseDomain: string): string {
@@ -30,6 +48,25 @@ export interface FleetOptions {
   headless?: boolean;
   /** Slow actions down so a person can follow along. Milliseconds between operations. */
   slowMo?: number;
+}
+
+/**
+ * The devices a screen can be. A sign-in's own viewport (a product's tablet app) is the default for that
+ * app; a device named when the screen opens wins over it, so the same app can be tried on a phone or turned
+ * to portrait. Sizes are CSS pixels of common devices: a 6.1" phone, an 11" tablet each way, a laptop.
+ */
+export const DEVICES = {
+  desktop: { viewport: { width: 1440, height: 900 } },
+  phone: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 },
+  tablet: { viewport: { width: 1180, height: 820 }, hasTouch: true, deviceScaleFactor: 2 },
+  'tablet-portrait': { viewport: { width: 820, height: 1180 }, hasTouch: true, deviceScaleFactor: 2 },
+} as const;
+export type Device = keyof typeof DEVICES;
+
+/** How a screen looks: its device and the light or dark appearance its system asks for. */
+export interface Appearance {
+  device?: Device;
+  colorScheme?: 'light' | 'dark';
 }
 
 /**
@@ -56,7 +93,7 @@ export interface Fleet {
   open(
     who: Who,
     path?: string,
-    options?: {
+    options?: Appearance & {
       address?: string;
       /** Called with the new context before it loads anything, so nothing it does is missed. */
       onContext?: (context: BrowserContext) => void;
@@ -120,10 +157,11 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
      * the same path a real client's takes. Defaults come from 198.18.0.0/15, a range reserved for testing.
      * Giving several screens one address is how a crew behind one router is simulated.
      */
-    async open(who, path = '/', { address, onContext } = {}) {
+    async open(who, path = '/', { address, onContext, device, colorScheme } = {}) {
       const signIn = who.signIn;
       const localStorage = signIn?.localStorage;
       const viewport = signIn?.viewport;
+      const shape = device ? DEVICES[device] : viewport ? { viewport, hasTouch: true } : {};
       const origin = originFor(who.persona.tenant);
       const n = nextAddress++;
       const ip = address ?? `198.18.${Math.floor(n / 256) % 256}.${n % 256}`;
@@ -134,7 +172,8 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         // The server runs in UTC; a person's browser runs where they are. "Today", "Yesterday" and the
         // year on a byline are decided here, so this machine's zone must not leak in.
         timezoneId: who.persona.timeZone,
-        ...(viewport ? { viewport, hasTouch: true } : {}),
+        ...shape,
+        ...(colorScheme ? { colorScheme } : {}),
       });
       // Before the app's scripts run, and only where absent: how a tablet that is already signed in is
       // opened (an app that keeps its tokens there), without putting back what the app later rewrites.
@@ -159,17 +198,7 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
       await context.route(`${origin}/**`, async (route) =>
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
-      if (signIn?.cookies?.length)
-        await context.addCookies(
-          signIn.cookies.map((c) => ({
-            name: c.name,
-            value: c.value,
-            url: origin,
-            httpOnly: c.httpOnly ?? true,
-            secure: false,
-            sameSite: c.sameSite ?? 'Lax',
-          })),
-        );
+      if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
       onContext?.(context);
       const page = await context.newPage();
       // load, not domcontentloaded: an app drawn by its scripts is drawn after the HTML.

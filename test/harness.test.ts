@@ -60,6 +60,14 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(tools.tools.find((t) => t.name === 'world_list')!.description).toContain('shops');
   });
 
+  it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {
+    const made = await call('world_create', { tenants: ['east'], options: { closed: ['east'] } });
+    expect(made.text).toContain('east is closed for the season');
+    await call('world_destroy', { world: /^(w\d+)/.exec(made.text)![1]! });
+    const odd = await call('world_create', { tenants: ['east'], options: { colour: 'red' } });
+    expect(odd.error).toBe(true);
+  });
+
   it('opens a person signed in, sees the dialog first, acts in it, and hears what the server did', async () => {
     const opened = await call('screen_open', { world, person: 'north-ana' });
     expect(opened.text).toContain('Signed in as Ana');
@@ -119,6 +127,38 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(h.world(world).world.requests).toContain('north GET /p/north/e/abc');
   });
 
+  it('opens a screen as a phone or a turned tablet, light or dark', async () => {
+    const look = async (args: Record<string, unknown>) => {
+      const opened = await call('screen_open', { world, ...args });
+      expect(opened.error, opened.text).toBe(false);
+      const s = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!);
+      // The screen's size, not the page's layout width: a page with no viewport tag is laid out at 980 px on a
+      // phone, as a real one does.
+      return {
+        ...s.screen.page.viewportSize(),
+        ...(await s.screen.page.evaluate(() => ({
+          touch: matchMedia('(pointer: coarse)').matches,
+          dark: matchMedia('(prefers-color-scheme: dark)').matches,
+        }))),
+      };
+    };
+    // A customer on a phone, at night.
+    expect(await look({ link: '/p/north/e/abc', device: 'phone', colorScheme: 'dark' })).toEqual({
+      width: 390,
+      height: 844,
+      touch: true,
+      dark: true,
+    });
+    // The tablet app turned to portrait: the device wins over the app's own landscape.
+    expect(await look({ person: 'south-ben', app: 'tech', device: 'tablet-portrait' })).toMatchObject({
+      width: 820,
+      height: 1180,
+      dark: false,
+    });
+    const odd = await call('screen_open', { world, person: 'north-ana', device: 'watch' });
+    expect(odd.error).toBe(true);
+  });
+
   it('moves the clock, and every screen follows', async () => {
     const before = Date.now();
     const moved = await call('world_clock', { world, jumpMs: 86_400_000 });
@@ -126,6 +166,9 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     const s = h.screens().find((x) => x.persona.id === 'north-ana')!;
     const now = await s.screen.page.evaluate(() => Date.now());
     expect(now - before).toBeGreaterThan(86_000_000);
+    // A day on, past the twelve-hour session it opened with: still signed in, as a person who kept using it.
+    await s.screen.page.reload();
+    expect(await s.screen.page.textContent('main')).toContain('Signed in as Ana');
   });
 
   it('runs the product’s checks', async () => {
@@ -143,7 +186,8 @@ describe('a run of a scenario', () => {
         id: 'send-an-estimate',
         title: 'Send an estimate',
         goal: 'Does the customer get the estimate?',
-        world: { seed: false },
+        // A Saturday morning in March, in the shop's zone.
+        world: { seed: false, startsAt: '2030-03-02 09:00' },
         cast: [{ role: 'owner', part: 'the office' }, { role: 'technician' }],
         try: ['Send the estimate to the customer'],
         expect: ['The customer gets a text with the link'],
@@ -157,7 +201,18 @@ describe('a run of a scenario', () => {
     const tech = h.screens().find((s) => s.persona.id === 'demo-shop-ben')!;
     expect(tech.screen.page.url()).toContain('/tech/');
 
-    const office = h.screens().find((s) => s.persona.id === 'demo-shop-ana')!.id;
+    // The day began when the scenario said, in the shop's zone, and the cast signed in on it. The page's
+    // clock is read and shown here, in Node: Chromium's own tzdata can disagree with Node's on a zone.
+    const ana = h.screens().find((s) => s.persona.id === 'demo-shop-ana')!;
+    const at = await ana.screen.page.evaluate(() => Date.now());
+    const shown = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: ana.persona.timeZone,
+      dateStyle: 'short',
+      timeStyle: 'short',
+    }).format(at);
+    expect(shown).toBe('2030-03-02 09:00');
+    expect(await ana.screen.page.textContent('main')).toContain('Signed in as Ana');
+    const office = ana.id;
     const logged = await call('finding_log', {
       run,
       title: 'The text never arrives',

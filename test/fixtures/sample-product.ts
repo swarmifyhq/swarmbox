@@ -5,6 +5,7 @@
 
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { z } from 'zod';
 import { hooksFor, type Hooks } from '../../src/hooks.ts';
 import type { CheckResult, Settled } from '../../src/checks.ts';
 import type { Persona, Product, ProductWorld, SignIn } from '../../src/product.ts';
@@ -71,11 +72,13 @@ export interface SampleWorld extends ProductWorld {
   requests: string[];
 }
 
-async function startSample(tenants: string[], port: number): Promise<SampleWorld> {
+async function startSample(tenants: string[], port: number, closed: string[] = []): Promise<SampleWorld> {
   const feeds = new Map<string, Row[]>(tenants.map((t) => [t, []]));
   const inbox: Row[] = [];
   let seq = 0;
   let offsetMs = 0;
+  /** A twelve-hour session, minted on the world's time. */
+  const session = (id: string) => [{ name: 'sid', value: `${id}.${Date.now() + offsetMs + 12 * 3_600_000}` }];
   const requests: string[] = [];
   const push = (tenant: string, row: { kind: string; [k: string]: unknown }) =>
     feeds.get(tenant)!.push({ ...row, cursor: String(++seq), at: new Date().toISOString() });
@@ -95,8 +98,10 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
         const path = url.pathname.slice('/_sandbox'.length);
         if (path === '/health') return json(200, { ok: true, result: {} });
         if (path === '/clock') {
-          if (req.method === 'POST')
-            offsetMs += Number((JSON.parse(body) as { jumpMs?: number }).jumpMs ?? 0);
+          if (req.method === 'POST') {
+            const move = JSON.parse(body) as { jumpMs?: number; to?: string };
+            offsetMs = move.to ? Date.parse(move.to) - Date.now() : offsetMs + Number(move.jumpMs ?? 0);
+          }
           return json(200, {
             ok: true,
             result: {
@@ -123,8 +128,10 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
       const tenant = host.endsWith(`.${BASE_DOMAIN}`) ? host.slice(0, -(BASE_DOMAIN.length + 1)) : '';
       if (!feeds.has(tenant)) return json(404, { error: 'no such tenant' });
       requests.push(`${tenant} ${req.method} ${url.pathname}`);
-      const sid = /(?:^|; )sid=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
-      const who = PEOPLE(tenant).find((p) => p.id === sid);
+      // A session is <person>.<expiry>, and expires on the world's time, as a real product's would.
+      const [sid, until] = (/(?:^|; )sid=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? '').split('.');
+      const who =
+        Number(until) > Date.now() + offsetMs ? PEOPLE(tenant).find((p) => p.id === sid) : undefined;
       if (url.pathname === '/tech/')
         return res.writeHead(200, { 'content-type': 'text/html' }).end(TECH_PAGE);
       if (url.pathname.startsWith('/p/'))
@@ -184,7 +191,7 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
     signIn: async (p, app): Promise<SignIn> =>
       app === 'tech'
         ? {
-            cookies: [{ name: 'sid', value: p.id }],
+            cookies: session(p.id),
             path: '/tech/',
             viewport: { width: 1180, height: 820 },
             ready: async (pg) => {
@@ -193,7 +200,8 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
               await pg.getByRole('heading', { name: 'Today' }).waitFor();
             },
           }
-        : { cookies: [{ name: 'sid', value: p.id }] },
+        : { cookies: session(p.id) },
+    renewSignIn: async (p) => session(p.id),
     tenantOfPath: (path) => /^\/p\/([a-z0-9-]+)\//.exec(path)?.[1],
     settle: async (): Promise<Record<string, Settled>> =>
       Object.fromEntries(tenants.map((t) => [t, { settled: true, ms: 0, pending: [], known: [] }])),
@@ -211,7 +219,7 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
           violations: failed ? [{ summary: `${failed} texts failed` }] : [],
         };
       }),
-    notes: () => ['a sample world'],
+    notes: () => ['a sample world', ...closed.map((t) => `${t} is closed for the season`)],
     stop: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
@@ -225,7 +233,13 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     scenarioDir: dirs.scenarioDir,
     home: dirs.home,
     apps: ['tech'],
-    startWorld: (spec, port) => startSample(spec.tenants.length ? spec.tenants : ['demo-shop'], port),
+    startWorld: (spec, port) =>
+      startSample(
+        spec.tenants.length ? spec.tenants : ['demo-shop'],
+        port,
+        (spec.options?.closed as string[] | undefined) ?? [],
+      ),
+    worldOptions: { closed: z.array(z.string()).optional().describe('Shops closed for the season') },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };
 }

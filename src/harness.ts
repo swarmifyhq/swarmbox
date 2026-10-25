@@ -17,7 +17,14 @@ import type {
   Route,
 } from 'playwright-core';
 import type { CheckResult, Settled } from './checks.ts';
-import { launchFleet, type Fleet, type Screen, type Who } from './fleet/browser.ts';
+import {
+  launchFleet,
+  setCookies,
+  type Appearance,
+  type Fleet,
+  type Screen,
+  type Who,
+} from './fleet/browser.ts';
 import {
   behindModal,
   changes,
@@ -142,7 +149,7 @@ async function portFree(port: number): Promise<boolean> {
   });
 }
 
-export interface OpenScreenOptions {
+export interface OpenScreenOptions extends Appearance {
   address?: string;
   /** One of the product's apps (Product.apps); default its main one. */
   app?: string;
@@ -167,7 +174,7 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
    * Open a customer's link (an estimate, an invoice, an invitation) as the customer would: a browser with no
    * sign-in, on the tenant's own host. The full link or just its path.
    */
-  openLink(worldId: string, link: string, options?: { address?: string }): Promise<ScreenEntry>;
+  openLink(worldId: string, link: string, options?: Appearance & { address?: string }): Promise<ScreenEntry>;
   /** Change what a screen's network does: airplane mode, a signal that stalls, a slow one, or back to normal. */
   setNetwork(screenId: string, mode: NetworkMode): Promise<void>;
   screens(): ScreenEntry[];
@@ -526,6 +533,8 @@ export function createHarness<W extends ProductWorld>(
     };
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
       ...(options.address ? { address: options.address } : {}),
+      ...(options.device ? { device: options.device } : {}),
+      ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
       onContext: (ctx) => {
         ctx.on('console', (m) => {
           // A 4xx is the server refusing something, which the app handles and shows (a conflict, a
@@ -631,6 +640,7 @@ export function createHarness<W extends ProductWorld>(
         tenants: partial.tenants ?? [],
         seed: partial.seed ?? false,
         ...(partial.keep ? { keep: partial.keep } : {}),
+        ...(partial.options ? { options: partial.options } : {}),
       };
       const id = `w${nextWorld++}`;
       const run = creating.then(async () => {
@@ -908,8 +918,17 @@ export function createHarness<W extends ProductWorld>(
       const state = move ? await hooks.moveClock(move) : await hooks.clock();
       if (move) {
         w.clock = { at: state.process.at, paused: state.clock.frozenAt !== null };
-        for (const s of [...screens.values()].filter((x) => x.worldId === worldId))
+        for (const s of [...screens.values()].filter((x) => x.worldId === worldId)) {
           await followClock(s, w.clock);
+          // Signed in again on the new time, as a person who kept using the app would still be. A customer's
+          // screen has no sign-in to keep.
+          if (!s.customer && w.world.renewSignIn)
+            await setCookies(
+              s.screen.context,
+              w.fleet.originFor(s.persona.tenant),
+              await w.world.renewSignIn(s.persona, s.app),
+            );
+        }
       }
       return state;
     },
