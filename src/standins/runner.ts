@@ -109,11 +109,23 @@ const SYSTEM_READS: string[] = [
         '/etc/ld.so.conf.d',
         '/proc',
         '/dev',
+        // The runtime runs the command through a shell and env inside its namespace, with socat as its proxies;
+        // Node from a tool cache (setup-node) leaves /usr/bin out of Node's own folder.
+        ...['bash', 'sh', 'env', 'socat'].map(onPath).filter((p): p is string => p !== null),
       ]
         .filter((p) => existsSync(p))
         .map((p) => realpathSync(p))
     : []),
 ];
+
+/** Where a program is on this machine's PATH, or null. */
+function onPath(name: string): string | null {
+  for (const dir of (process.env.PATH ?? '/usr/bin:/bin').split(':')) {
+    const p = join(dir, name);
+    if (dir && existsSync(p)) return p;
+  }
+  return null;
+}
 
 /** The kit's own folder: sdk and protocol, which import nothing but Node's built-ins. */
 const KIT_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));

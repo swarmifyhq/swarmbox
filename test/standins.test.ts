@@ -5,6 +5,7 @@
 import { createHmac } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -243,7 +244,6 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
       expect(r).toMatchObject({
         internet: 'blocked',
         loopback: 'blocked',
-        listen: 'blocked',
         readSecret: 'blocked',
         readSystem: 'blocked',
         writeOutside: 'blocked',
@@ -252,6 +252,18 @@ describe.skipIf(SANDBOX === 'off')('a hostile stand-in, in the sandbox', () => {
       });
       expect(existsSync(outside)).toBe(false);
       expect(r.home).not.toBe(process.env.HOME);
+      // macOS refuses it a port. Linux gives it one inside its own network namespace, where nothing outside can
+      // reach it: so Swarmbox's side can't connect to it.
+      if (process.platform === 'darwin') expect(r.listen).toBe('blocked');
+      else {
+        expect(r.listening).toBeGreaterThan(0);
+        const reached = await new Promise<boolean>((done) => {
+          const sock = net.connect(Number(r.listening), '127.0.0.1');
+          sock.on('connect', () => (sock.destroy(), done(true)));
+          sock.on('error', () => done(false));
+        });
+        expect(reached).toBe(false);
+      }
       forked = Number(r.forked ?? 0);
     } finally {
       delete process.env.SWARMBOX_CANARY;
