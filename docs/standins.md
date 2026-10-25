@@ -77,6 +77,11 @@ interface StandInManifest {
   };
   accounts: { fields: Record<string, 'id' | 'secret' | 'phone' | 'email' | 'text'> };
   behaviours: Behaviour[]; // which of the vocabulary it supports
+  answers?: {
+    // how its provider says "down" and "slow down", for the behaviours Swarmbox applies itself
+    fail?: { status: number; headers?: Record<string, string>; body?: unknown };
+    limit?: { status: number; headers?: Record<string, string>; body?: unknown };
+  };
   inbound: InboundKind[]; // what it can make arrive, each with a typed body
   clock: 'world' | 'real'; // which time it signs with (see Time)
   parity?: string; // its parity suite (step 3)
