@@ -17,7 +17,14 @@ import type {
   Route,
 } from 'playwright-core';
 import type { CheckResult, Settled } from './checks.ts';
-import { launchFleet, type Appearance, type Fleet, type Screen, type Who } from './fleet/browser.ts';
+import {
+  launchFleet,
+  setCookies,
+  type Appearance,
+  type Fleet,
+  type Screen,
+  type Who,
+} from './fleet/browser.ts';
 import {
   behindModal,
   changes,
@@ -910,8 +917,17 @@ export function createHarness<W extends ProductWorld>(
       const state = move ? await hooks.moveClock(move) : await hooks.clock();
       if (move) {
         w.clock = { at: state.process.at, paused: state.clock.frozenAt !== null };
-        for (const s of [...screens.values()].filter((x) => x.worldId === worldId))
+        for (const s of [...screens.values()].filter((x) => x.worldId === worldId)) {
           await followClock(s, w.clock);
+          // Signed in again on the new time, as a person who kept using the app would still be. A customer's
+          // screen has no sign-in to keep.
+          if (!s.customer && w.world.renewSignIn)
+            await setCookies(
+              s.screen.context,
+              w.fleet.originFor(s.persona.tenant),
+              await w.world.renewSignIn(s.persona, s.app),
+            );
+        }
       }
       return state;
     },

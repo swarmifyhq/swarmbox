@@ -76,8 +76,16 @@ export interface ProductWorld {
   hooks: Hooks | null;
   /** Everyone who can sign in, in every tenant. */
   people(): Promise<Persona[]>;
-  /** Sign a person in to one of the product's apps; app is undefined for its main one. */
+  /**
+   * Sign a person in to one of the product's apps; app is undefined for its main one. On the world's time:
+   * once its clock has moved, a session dated on this machine's clock may already be over to the product.
+   */
   signIn(persona: Persona, app: string | undefined): Promise<SignIn>;
+  /**
+   * After the world's clock moves, the cookies that keep a screen already signed in signed in on the new
+   * time, for a product whose sessions expire. Without it, a jump past a session's life signs the screen out.
+   */
+  renewSignIn?(persona: Persona, app: string | undefined): Promise<StartCookie[]>;
   /**
    * Which tenant a path on no particular host belongs to, when the path says (a customer link like
    * /p/<tenant>/…). Undefined: only a world with one tenant can take a bare path.

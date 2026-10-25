@@ -15,7 +15,25 @@
 // support parameter properties.
 
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
-import type { Persona, SignIn } from '../product.ts';
+import type { Persona, SignIn, StartCookie } from '../product.ts';
+
+/** A sign-in's cookies, on the tenant's own origin: how a screen is signed in, and kept signed in. */
+export async function setCookies(
+  context: BrowserContext,
+  origin: string,
+  cookies: StartCookie[],
+): Promise<void> {
+  await context.addCookies(
+    cookies.map((c) => ({
+      name: c.name,
+      value: c.value,
+      url: origin,
+      httpOnly: c.httpOnly ?? true,
+      secure: false,
+      sameSite: c.sameSite ?? 'Lax',
+    })),
+  );
+}
 
 /** Makes `*.{baseDomain}` resolve to loopback inside this browser, and nowhere else on the machine. */
 export function resolverRule(baseDomain: string): string {
@@ -180,17 +198,7 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
       await context.route(`${origin}/**`, async (route) =>
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
-      if (signIn?.cookies?.length)
-        await context.addCookies(
-          signIn.cookies.map((c) => ({
-            name: c.name,
-            value: c.value,
-            url: origin,
-            httpOnly: c.httpOnly ?? true,
-            secure: false,
-            sameSite: c.sameSite ?? 'Lax',
-          })),
-        );
+      if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
       onContext?.(context);
       const page = await context.newPage();
       // load, not domcontentloaded: an app drawn by its scripts is drawn after the HTML.

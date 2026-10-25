@@ -76,6 +76,8 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
   const inbox: Row[] = [];
   let seq = 0;
   let offsetMs = 0;
+  /** A twelve-hour session, minted on the world's time. */
+  const session = (id: string) => [{ name: 'sid', value: `${id}.${Date.now() + offsetMs + 12 * 3_600_000}` }];
   const requests: string[] = [];
   const push = (tenant: string, row: { kind: string; [k: string]: unknown }) =>
     feeds.get(tenant)!.push({ ...row, cursor: String(++seq), at: new Date().toISOString() });
@@ -123,8 +125,10 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
       const tenant = host.endsWith(`.${BASE_DOMAIN}`) ? host.slice(0, -(BASE_DOMAIN.length + 1)) : '';
       if (!feeds.has(tenant)) return json(404, { error: 'no such tenant' });
       requests.push(`${tenant} ${req.method} ${url.pathname}`);
-      const sid = /(?:^|; )sid=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
-      const who = PEOPLE(tenant).find((p) => p.id === sid);
+      // A session is <person>.<expiry>, and expires on the world's time, as a real product's would.
+      const [sid, until] = (/(?:^|; )sid=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? '').split('.');
+      const who =
+        Number(until) > Date.now() + offsetMs ? PEOPLE(tenant).find((p) => p.id === sid) : undefined;
       if (url.pathname === '/tech/')
         return res.writeHead(200, { 'content-type': 'text/html' }).end(TECH_PAGE);
       if (url.pathname.startsWith('/p/'))
@@ -184,7 +188,7 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
     signIn: async (p, app): Promise<SignIn> =>
       app === 'tech'
         ? {
-            cookies: [{ name: 'sid', value: p.id }],
+            cookies: session(p.id),
             path: '/tech/',
             viewport: { width: 1180, height: 820 },
             ready: async (pg) => {
@@ -193,7 +197,8 @@ async function startSample(tenants: string[], port: number): Promise<SampleWorld
               await pg.getByRole('heading', { name: 'Today' }).waitFor();
             },
           }
-        : { cookies: [{ name: 'sid', value: p.id }] },
+        : { cookies: session(p.id) },
+    renewSignIn: async (p) => session(p.id),
     tenantOfPath: (path) => /^\/p\/([a-z0-9-]+)\//.exec(path)?.[1],
     settle: async (): Promise<Record<string, Settled>> =>
       Object.fromEntries(tenants.map((t) => [t, { settled: true, ms: 0, pending: [], known: [] }])),

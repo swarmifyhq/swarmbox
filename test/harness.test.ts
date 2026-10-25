@@ -158,6 +158,9 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     const s = h.screens().find((x) => x.persona.id === 'north-ana')!;
     const now = await s.screen.page.evaluate(() => Date.now());
     expect(now - before).toBeGreaterThan(86_000_000);
+    // A day on, past the twelve-hour session it opened with: still signed in, as a person who kept using it.
+    await s.screen.page.reload();
+    expect(await s.screen.page.textContent('main')).toContain('Signed in as Ana');
   });
 
   it('runs the product’s checks', async () => {
