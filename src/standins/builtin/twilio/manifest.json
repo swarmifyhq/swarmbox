@@ -1,0 +1,126 @@
+{
+  "name": "twilio",
+  "provider": "Twilio",
+  "apiVersion": "2010-04-01",
+  "surfaces": ["sms", "voice", "recordings"],
+  "operations": [
+    {
+      "name": "messages.create",
+      "method": "POST",
+      "path": "/2010-04-01/Accounts/:account/Messages.json"
+    },
+    {
+      "name": "messages.get",
+      "method": "GET",
+      "path": "/2010-04-01/Accounts/:account/Messages/:sid"
+    },
+    {
+      "name": "calls.list",
+      "method": "GET",
+      "path": "/2010-04-01/Accounts/:account/Calls.json"
+    },
+    {
+      "name": "recordings.list",
+      "method": "GET",
+      "path": "/2010-04-01/Accounts/:account/Recordings.json"
+    },
+    {
+      "name": "recordings.media",
+      "method": "GET",
+      "path": "/2010-04-01/Accounts/:account/Recordings/:file"
+    },
+    {
+      "name": "transcriptions.list",
+      "method": "GET",
+      "path": "/2010-04-01/Accounts/:account/Recordings/:sid/Transcriptions.json"
+    },
+    {
+      "name": "intelligence.transcripts",
+      "method": "GET",
+      "path": "/intelligence/v2/Transcripts"
+    },
+    {
+      "name": "intelligence.sentences",
+      "method": "GET",
+      "path": "/intelligence/v2/Transcripts/:sid/Sentences"
+    }
+  ],
+  "connect": {
+    "baseUrls": {
+      "api": "/",
+      "intelligence": "/intelligence"
+    }
+  },
+  "accounts": {
+    "fields": {
+      "accountSid": "id",
+      "authToken": "secret",
+      "apiKeySid": "id",
+      "apiKeySecret": "secret",
+      "number": "phone"
+    }
+  },
+  "behaviours": ["fail", "hang", "slow", "limit", "reject", "undeliver", "manual", "duplicate", "reorder"],
+  "answers": {
+    "fail": {
+      "status": 500,
+      "body": {
+        "code": 20500,
+        "message": "Internal Server Error",
+        "status": 500
+      }
+    },
+    "limit": {
+      "status": 429,
+      "body": {
+        "code": 20429,
+        "message": "Too Many Requests",
+        "status": 429
+      }
+    }
+  },
+  "webhooks": {
+    "headers": ["x-twilio-signature", "i-twilio-idempotency-token"]
+  },
+  "inbound": [
+    {
+      "kind": "text",
+      "label": "A customer texts the company",
+      "fields": {
+        "tenant": "Which tenant",
+        "from": "Their number",
+        "body": "What they wrote"
+      }
+    },
+    {
+      "kind": "call",
+      "label": "A customer calls, the call runs the product's TwiML",
+      "fields": {
+        "tenant": "Which tenant",
+        "from": "Their number",
+        "answer": "answered, no-answer or busy, when the product dials (default no-answer)",
+        "talkSec": "How long an answered call lasts, seconds (default 60)",
+        "voicemail": "leave or none, when asked for a message (default leave)",
+        "messageSec": "How long their message is, seconds (default 20)",
+        "ringMs": "How long it rings first, real milliseconds (default 3000)",
+        "hold": "true: it rings until a hangup inbound"
+      }
+    },
+    {
+      "kind": "hangup",
+      "label": "The caller hangs up a call that is still ringing",
+      "fields": {
+        "call": "The call sid"
+      }
+    },
+    {
+      "kind": "receipt",
+      "label": "A text's delivery receipt, sent by hand (with manual)",
+      "fields": {
+        "message": "The message sid",
+        "status": "sent, delivered, undelivered or failed"
+      }
+    }
+  ],
+  "clock": "world"
+}

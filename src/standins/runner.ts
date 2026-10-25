@@ -25,6 +25,7 @@ import {
   shapeData,
   shapeHeaders,
   shapeParam,
+  shapeSettings,
 } from './shape.ts';
 
 export interface LogEntry {
@@ -86,7 +87,8 @@ export interface StandIn {
   origin: string;
   /** The manifest's base addresses, absolute. */
   baseUrls: Record<string, string>;
-  account(tenant: string): Promise<Record<string, string>>;
+  /** Make one tenant's account, with what a person would set in the provider's console for it. */
+  account(tenant: string, settings?: Record<string, string>): Promise<Record<string, string>>;
   behave(rule: Omit<Rule, 'id'>): Promise<Rule>;
   rules(): Rule[];
   clearRules(id?: string): Promise<void>;
@@ -449,25 +451,35 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     });
     return 0;
   };
-  const post = (url: string, method: string, rawHeaders: unknown, body: Buffer): Promise<number> => {
+  interface Answer {
+    status: number;
+    contentType: string;
+    body: Buffer;
+  }
+  const nothing = (status = 0): Answer => ({ status, contentType: '', body: Buffer.alloc(0) });
+  const post = (url: string, method: string, rawHeaders: unknown, body: Buffer): Promise<Answer> => {
     let target: URL;
     try {
       target = new URL(url);
     } catch {
-      return Promise.resolve(refuseDelivery(String(url), method, 'refused: not a URL'));
+      return Promise.resolve(nothing(refuseDelivery(String(url), method, 'refused: not a URL')));
     }
     if (!METHODS.has(method))
-      return Promise.resolve(refuseDelivery(url, method, 'refused: not an HTTP method'));
+      return Promise.resolve(nothing(refuseDelivery(url, method, 'refused: not an HTTP method')));
     if (target.protocol !== 'http:' || !tenantHost.test(target.hostname))
-      return Promise.resolve(refuseDelivery(url, method, "refused: not a tenant's host in this world"));
+      return Promise.resolve(
+        nothing(refuseDelivery(url, method, "refused: not a tenant's host in this world")),
+      );
     if (target.pathname.startsWith('/_sandbox'))
-      return Promise.resolve(refuseDelivery(url, method, "refused: the product's own sandbox hooks"));
+      return Promise.resolve(
+        nothing(refuseDelivery(url, method, "refused: the product's own sandbox hooks")),
+      );
     if (inFlight >= DELIVERIES_IN_FLIGHT)
-      return Promise.resolve(refuseDelivery(url, method, 'refused: too many at once'));
+      return Promise.resolve(nothing(refuseDelivery(url, method, 'refused: too many at once')));
     const headers = shapeHeaders(rawHeaders, (name) => ALWAYS_SENT.has(name) || declared.has(name));
     inFlight++;
-    return new Promise<number>((done) => {
-      const finish = (status: number, answered: string) => {
+    return new Promise<Answer>((done) => {
+      const finish = (status: number, answered: string, answer: Answer = nothing(status)) => {
         inFlight--;
         record({
           kind: 'deliver',
@@ -479,7 +491,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
           sent: cut(body),
           answered,
         });
-        done(status);
+        done(answer);
       };
       try {
         const req = http.request(
@@ -493,8 +505,17 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
           },
           (res) => {
             const chunks: Buffer[] = [];
-            res.on('data', (c: Buffer) => chunks.push(c));
-            res.on('end', () => finish(res.statusCode ?? 0, cut(Buffer.concat(chunks))));
+            let size = 0;
+            res.on('data', (c: Buffer) => {
+              size += c.length;
+              if (size <= 1024 * 1024) chunks.push(c);
+            });
+            res.on('end', () => {
+              const all = Buffer.concat(chunks);
+              const status = res.statusCode ?? 0;
+              const contentType = String(res.headers['content-type'] ?? '').slice(0, 200);
+              finish(status, cut(all), { status, contentType, body: all });
+            });
             res.on('error', (e) => finish(0, e.message));
           },
         );
@@ -516,8 +537,14 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       .toUpperCase();
     const body = decode(typeof m.body === 'string' ? m.body : '');
     const run = async () => {
-      const status = await post(url, method, m.headers, body);
-      send({ type: 'delivered', id: deliveryId, status });
+      const a = await post(url, method, m.headers, body);
+      send({
+        type: 'delivered',
+        id: deliveryId,
+        status: a.status,
+        contentType: a.contentType,
+        body: encode(a.body),
+      });
     };
     if (takeGeneral('duplicate', null, null)) {
       await run();
@@ -730,8 +757,11 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
     baseUrls: Object.fromEntries(
       Object.entries(manifest.connect.baseUrls).map(([k, p]) => [k, `${origin}${p === '/' ? '' : p}`]),
     ),
-    async account(tenant) {
-      const made = await ask({ type: 'account', id: id(), tenant }, 'an account');
+    async account(tenant, settings = {}) {
+      const made = await ask(
+        { type: 'account', id: id(), tenant, settings: shapeSettings(settings) },
+        'an account',
+      );
       let creds: Record<string, string>;
       try {
         creds = shapeAccount(made, manifest.accounts.fields);

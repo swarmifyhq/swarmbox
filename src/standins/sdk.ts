@@ -43,7 +43,7 @@ export interface StandInContext {
   deliver(
     url: string,
     init: { method?: string; headers?: Record<string, string>; body?: Buffer | string },
-  ): Promise<number>;
+  ): Promise<Delivered>;
   /** A behaviour of the stand-in's own that applies to this call, used up by one; null when none does. */
   take(
     behaviour: Rule['behaviour'],
@@ -51,8 +51,18 @@ export interface StandInContext {
   ): Rule | null;
   /** The accounts made so far, by tenant. */
   accounts: Map<string, Record<string, string>>;
+  /** What the product set for each tenant's account, as a person would in the provider's console. */
+  settings: Map<string, Record<string, string>>;
   /** A folder the stand-in may write. */
   tmp: string;
+}
+
+/** The product's answer to a webhook: 0 when it couldn't be delivered. */
+export interface Delivered {
+  status: number;
+  contentType: string;
+  body: Buffer;
+  text(): string;
 }
 
 export interface StandInDefinition {
@@ -63,7 +73,12 @@ export interface StandInDefinition {
   /** Handlers by inbound kind (the manifest's inbound); what it returns is shown to the agent as data. */
   inbound?: Record<string, (body: Record<string, unknown>, ctx: StandInContext) => unknown>;
   /** Shape an account; given credentials already made from the manifest's fields, all marked. */
-  account?(tenant: string, made: Record<string, string>, ctx: StandInContext): Record<string, string>;
+  account?(
+    tenant: string,
+    made: Record<string, string>,
+    ctx: StandInContext,
+    settings: Record<string, string>,
+  ): Record<string, string>;
   /** Forget state on reset (accounts stay). */
   reset?(): void;
 }
@@ -127,7 +142,8 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
   let clockSetAt = Date.now();
   let tmp = '';
   let rules: Rule[] = [];
-  const waiting = new Map<string, (status: number) => void>();
+  const waiting = new Map<string, (d: Delivered) => void>();
+  const settings = new Map<string, Record<string, string>>();
   let nextDelivery = 0;
   const accounts = new Map<string, Record<string, string>>();
 
@@ -139,7 +155,7 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
     },
     deliver(url, init) {
       const id = `d${nextDelivery++}`;
-      return new Promise<number>((resolve) => {
+      return new Promise<Delivered>((resolve) => {
         waiting.set(id, resolve);
         send({
           type: 'deliver',
@@ -168,6 +184,7 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
       return rule;
     },
     accounts,
+    settings,
     get tmp() {
       return tmp;
     },
@@ -246,7 +263,8 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
           const made = Object.fromEntries(
             Object.entries(manifest.accounts.fields).map(([k, kind]) => [k, makeCredential(kind, m.tenant)]),
           );
-          const account = def.account ? def.account(m.tenant, made, ctx) : made;
+          settings.set(m.tenant, m.settings ?? {});
+          const account = def.account ? def.account(m.tenant, made, ctx, m.settings ?? {}) : made;
           accounts.set(m.tenant, account);
           return account;
         });
@@ -277,7 +295,15 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
         });
         return;
       case 'delivered':
-        waiting.get(m.id)?.(m.status);
+        {
+          const body = decode(m.body);
+          waiting.get(m.id)?.({
+            status: m.status,
+            contentType: m.contentType ?? '',
+            body,
+            text: () => body.toString('utf8'),
+          });
+        }
         waiting.delete(m.id);
         return;
     }

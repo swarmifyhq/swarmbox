@@ -75,7 +75,7 @@ defineStandIn({
     reply: async (body, ctx) => {
       const acct = ctx.accounts.get(String(body.tenant));
       if (!acct) throw new Error(`no account for ${String(body.tenant)}`);
-      const status = await post(ctx, acct.secret!, String(body.url), {
+      const { status } = await post(ctx, acct.secret!, String(body.url), {
         From: String(body.from),
         To: acct.from!,
         Body: String(body.body),

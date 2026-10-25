@@ -50,7 +50,7 @@ export interface StandInEndpoint {
   /** The stand-in's base addresses by the manifest's names: point the product's real client at these. */
   baseUrls: Record<string, string>;
   /** A provider account for one tenant: credentials the product provisions that tenant with, all marked fake. */
-  account(tenant: string): Promise<Record<string, string>>;
+  account(tenant: string, settings?: Record<string, string>): Promise<Record<string, string>>;
 }
 
 /** Where a stand-in comes from: its folder holds manifest.json and its entry module. */

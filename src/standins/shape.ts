@@ -83,6 +83,17 @@ export function shapeParam(param: Record<string, unknown>): Record<string, unkno
   return out;
 }
 
+/** Console settings the product gives an account (its webhook addresses): plain keys, single-line values. */
+export function shapeSettings(settings: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(settings).slice(0, 20)) {
+    if (!KEY.test(k) || typeof v !== 'string' || v.length > 2048 || /[\r\n\0]/.test(v))
+      throw new Error(`account setting ${k.slice(0, 40)} must be a plain name with a single-line value`);
+    out[k] = v;
+  }
+  return out;
+}
+
 /** Real-looking live credentials: a stand-in refuses a request carrying one, and never logs it. */
 export const LIVE_CREDENTIAL = /\b(?:sk|rk|pk)_live_[0-9A-Za-z]{8,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/;
 
