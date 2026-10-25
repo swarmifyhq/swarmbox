@@ -51,7 +51,9 @@ defineStandIn({
         // macOS; anywhere it starts, stopping the stand-in must still take it.
         forked: await new Promise((done) => {
           try {
-            const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+            // The test's marker rides in its arguments: found from the host, whatever pid a sandbox gives it.
+            const marker = String(req.query.get('marker') ?? 'swarmbox-fork');
+            const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', marker], {
               stdio: 'ignore',
               detached: true,
             });
