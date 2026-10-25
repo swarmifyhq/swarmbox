@@ -1,13 +1,11 @@
-# Swarmbox CI on the Swarmify runner pool: swarmbox-studio-3 (label swarmbox), which shares a slot with
-# Flowology's flow-studio-3 (cores 10-14, 3 GB). Kept light on purpose: vitest at two workers, the browser
-# tests one file at a time, the pnpm store cached between runs. The check job runs in Playwright's own
-# image, which has Chromium and the system libraries it needs (the runner's image has neither); its tag
-# matches playwright-core in pnpm-lock.yaml.
+# Swarmbox CI on GitHub's own runners (DEC-004: the repo goes public, so a fork's pull request must never run on
+# a machine of ours). Kept light: vitest at two workers, the browser tests one file at a time, the pnpm store
+# cached between runs.
 #
 #   check    typecheck, lint, formatting, build, unit tests, then the browser tests (Chromium): the screens
-#            and what an agent sees on them, and a whole run on the sample product in test/fixtures.
-#   publish  on main only, when package.json's version isn't published yet: to GitHub Packages, where
-#            products of ours install @swarmifyhq/swarmbox with their own GITHUB_TOKEN (packages: read).
+#            and what an agent sees on them, a whole run on the sample product in test/fixtures, and the
+#            stand-ins, sandboxed (bubblewrap), hostile ones included.
+#   publish  on main only, when package.json's version isn't on npm yet: `swarmbox` on npm, with provenance.
 
 name: ci
 
@@ -21,25 +19,23 @@ concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
-# Least privilege by default; publish asks for packages: write itself.
+# Least privilege by default; publish asks for id-token: write itself.
 permissions:
   contents: read
 
 jobs:
   check:
-    runs-on: [self-hosted, swarmbox]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
-    container:
-      image: mcr.microsoft.com/playwright:v1.63.0-noble
-      # The stand-in sandbox (bubblewrap) needs user, network and pid namespaces and its own /proc, which Docker's
-      # default seccomp, AppArmor and masked paths refuse. Not --privileged. --init reaps what tests kill.
-      # Since 25 Oct (DEC-004): on our self-hosted runner only, until PR CI moves to GitHub-hosted runners before
-      # going public; remove these options then.
-      options: --init --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined
     steps:
       - uses: actions/checkout@v4
+      # The stand-in sandbox: bubblewrap needs unprivileged user namespaces, which Ubuntu 24.04 restricts through
+      # AppArmor; socat and ripgrep are sandbox-runtime's helpers. A GitHub-hosted runner is a throwaway VM.
       - name: Sandbox tools
-        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends bubblewrap socat ripgrep
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends bubblewrap socat ripgrep
       # pnpm's version comes from package.json's packageManager field.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -48,6 +44,8 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Chromium
+        run: pnpm exec playwright-core install --with-deps chromium
       - name: Typecheck, lint, formatting
         run: pnpm run check
       - name: Build
@@ -61,11 +59,11 @@ jobs:
   publish:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, swarmbox]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
-      packages: write
+      id-token: write # npm provenance: the package says which commit and workflow built it
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -73,19 +71,19 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          registry-url: https://npm.pkg.github.com
-          scope: '@swarmifyhq'
+          registry-url: https://registry.npmjs.org
       - name: Install
         run: pnpm install --frozen-lockfile --prefer-offline
       - name: Build
         run: pnpm run build
       - name: Publish, unless this version already is
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
         run: |
           v=$(node -p "require('./package.json').version")
-          if npm view "@swarmifyhq/swarmbox@$v" version >/dev/null 2>&1; then
-            echo "@swarmifyhq/swarmbox@$v is already published"
+          if npm view "swarmbox@$v" version >/dev/null 2>&1; then
+            echo "swarmbox@$v is already published"
           else
-            pnpm publish --no-git-checks
+            pnpm publish --no-git-checks --access public
           fi
