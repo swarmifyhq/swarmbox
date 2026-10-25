@@ -1,7 +1,9 @@
 // The stand-in parts that need no process: the manifest's checks, matching a request to an operation, the marks
 // on credentials, and the production guard.
 
+import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import { withJpegComment, withPngText } from '../../src/device/props.ts';
 import { assertNoStandins, isThisMachine, standInLeaks } from '../../src/standins/guard.ts';
 import { Manifest, matchPath, operationOf } from '../../src/standins/manifest.ts';
 import { ppidOfStat } from '../../src/standins/runner.ts';
@@ -121,5 +123,27 @@ describe('the process table on Linux', () => {
   it('reads a parent from /proc/<pid>/stat, whatever the process is called', () => {
     expect(ppidOfStat('4242 (node) S 4100 4242 4242 0 -1 4194560 …')).toBe(4100);
     expect(ppidOfStat('4243 (a (b) c) R 1 4243 4243 0 -1 …')).toBe(1);
+  });
+});
+
+describe('a prop’s tag inside its file', () => {
+  it('goes in a JPEG comment right after the start, and the PNG’s first chunk after its header, CRC and all', () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x02, 0xff, 0xd9]);
+    const tagged = withJpegComment(jpeg, 'swarmbox-prop:prop_1');
+    expect([...tagged.subarray(0, 4)]).toEqual([0xff, 0xd8, 0xff, 0xfe]);
+    expect(tagged.readUInt16BE(4)).toBe('swarmbox-prop:prop_1'.length + 2);
+    expect(tagged.subarray(-6)).toEqual(jpeg.subarray(2));
+
+    // A 1x1 PNG: signature, IHDR, IDAT, IEND.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const text = withPngText(png, 'Comment', 'swarmbox-prop:prop_1');
+    const len = text.readUInt32BE(33);
+    expect(text.toString('latin1', 37, 41)).toBe('tEXt');
+    const typed = text.subarray(37, 41 + len);
+    expect(text.readUInt32BE(41 + len)).toBe(zlib.crc32(typed));
+    expect(text.subarray(41 + len + 4)).toEqual(png.subarray(33));
   });
 });

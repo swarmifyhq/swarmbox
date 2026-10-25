@@ -17,6 +17,9 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
 - **People.** Everyone in the world, signed in without a password, each on their own screen; a tablet
   app past its first screen; a customer at a link, with no sign-in at all. Any screen can be a phone, a
   tablet either way up or a desktop, light or dark.
+- **The device and props.** Swarmbox makes the photos, documents and signatures a person would use, each tagged
+  with its id. It puts them in a screen's file chooser (a tablet's camera button) or in front of its live camera,
+  and sets where the device is and whether it shows notifications.
 - **Time.** Move a world's clock forward, and every screen follows; people stay signed in across the jump
   (`renewSignIn`). A scenario can say when its day starts (`world.startsAt`: "09:00", or a date and time
   in the tenant's zone, to test across a time change). Swarmbox works out times with Node's tzdata; a

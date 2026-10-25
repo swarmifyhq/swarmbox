@@ -140,6 +140,40 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     );
   });
 
+  it('gives a screen a camera, files and a place, from props Swarmbox makes', async () => {
+    const made = await call('prop_make', { kind: 'photo', about: 'a water heater, rusted at the base' });
+    expect(made.text).toMatch(/^prop_[0-9a-f]{8}: photo/);
+    const id = /^(prop_[0-9a-f]{8})/.exec(made.text)![1]!;
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'north-ana' })).text,
+    )![1]!;
+    const click = (name: string) =>
+      call('screen_act', { screen, action: { kind: 'click', role: 'button', name } });
+    const shown = async () => h.screen(screen).screen.page.locator('#device').textContent();
+
+    // A chooser with nothing put in it is noted, and stays open as it would for a person.
+    await click('Add a photo');
+    await expect.poll(() => h.screen(screen).signals.some((sg) => sg.kind === 'device')).toBe(true);
+
+    // With the prop queued, the camera button's chooser takes it, and the product gets the very file.
+    await call('file_pick', { screen, prop: id });
+    await click('Add a photo');
+    await expect.poll(shown).toBe('Uploaded a-water-heater-rusted-at-the-base.jpg');
+    const uploaded = h.world(world).world.uploads.at(-1)!;
+    expect(uploaded.body.includes(Buffer.from(`swarmbox-prop:${id}`))).toBe(true);
+
+    // A live camera shows the prop: not the grey of an empty one.
+    await call('camera_show', { screen, prop: id });
+    await click('Use the camera');
+    await expect.poll(shown).toMatch(/^Camera sees rgb/);
+    expect(await shown()).not.toBe('Camera sees rgb(68,68,68)');
+
+    await call('location_set', { screen, lat: 49.2827, lng: -123.1207 });
+    await click('Where am I');
+    await expect.poll(shown).toBe('At 49.283,-123.121');
+    await call('screen_close', { screen });
+  });
+
   it('takes the product’s own world options, and refuses ones it doesn’t know', async () => {
     const made = await call('world_create', { tenants: ['east'], options: { closed: ['east'] } });
     expect(made.text).toContain('east is closed for the season');

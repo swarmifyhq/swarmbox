@@ -158,14 +158,16 @@ changes.
 
 These are Swarmbox's own, with no stand-in involved:
 
-| Tool                              | Does                                                                                                                                           |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prop_make {kind, about}`         | Makes a photo (`about: "a water heater, rusted at the base"`), a PDF document, a signature or a voice clip. It's tagged invisibly with its id. |
-| `camera_show {screen, prop}`      | The screen's camera shows the prop, as a still or a video. Chromium plays a file as its camera.                                                |
-| `file_pick {screen, prop}`        | The next file chooser on the screen picks the prop.                                                                                            |
-| `location_set {screen, lat, lng}` | Where the device is.                                                                                                                           |
-| `notifications {screen, allow}`   | Whether the device allows notifications.                                                                                                       |
-| `call_hangup {world, call}`       | Ends a call that a stand-in started.                                                                                                           |
+| Tool                                | Does                                                                                                                                                                                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `prop_make {kind, about}`           | Makes a photo (`about: "a water heater, rusted at the base"`, a JPEG), a document (a PDF) or a signature (a PNG), drawn by Swarmbox. Each is tagged with its id inside the file (a JPEG comment, a PNG text chunk, a line of the PDF's text) and visibly in a corner.    |
+| `prop_list`                         | The props made so far.                                                                                                                                                                                                                                                   |
+| `file_pick {screen, prop}`          | Queues a prop for the screen's next file chooser. On a phone or tablet the camera button usually opens one: Expo's image picker does on the web, for example. A chooser that opens with nothing queued is noted on the screen, and stays open, as it would for a person. |
+| `camera_show {screen, prop}`        | For an app that opens a live camera (`getUserMedia`): the camera shows the prop, held still, or a grey frame when there's none. Every screen's camera is allowed, so no prompt can hang the page.                                                                        |
+| `location_set {screen, lat, lng}`   | Where the device is, with the location allowed.                                                                                                                                                                                                                          |
+| `notifications_set {screen, allow}` | Whether the device shows notifications.                                                                                                                                                                                                                                  |
+
+A phone call ending (`call_hangup`) belongs to the voice stand-in, as an inbound.
 
 ## The agent's tools
 
