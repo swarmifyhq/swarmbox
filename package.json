@@ -15,7 +15,7 @@
     }
   },
   "bin": {
-    "swarmbox": "./dist/cli.js"
+    "swarmbox": "dist/cli.js"
   },
   "files": [
     "dist"
