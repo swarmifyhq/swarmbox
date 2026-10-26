@@ -64,6 +64,18 @@ A product can take options of its own for a world (`worldOptions`, as zod fields
 migrating from another system, a feature switched on. `world_create` takes them as `options` and a
 scenario as `world.options`.
 
+What adapters have learnt so far:
+
+- **Mint sessions on the world's time.** A world's clock can be days ahead of the machine's, so a session dated on
+  the machine's clock may already be over to the product. Date it from the product's own clock (its hooks).
+- **Renew by extending, not replacing** (`renewSignIn`). An open page often keeps something derived from its
+  session (a CSRF token); a fresh session under it ends in the product's "sign in again".
+- **Share the server's output** (`log`): `world_log` is how an agent gets from a screen's "something went wrong" to
+  the stack.
+- **In the product's own tests, check for the tools it relies on, not Swarmbox's whole list**: each release adds
+  tools.
+- **Give each of the product's system tests its own port**, apart from the one a running sandbox uses.
+
 ### In production
 
 A product that uses stand-ins calls the guard as it starts in production, before it builds any provider client:
