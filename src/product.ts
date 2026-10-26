@@ -111,6 +111,10 @@ export interface ProductWorld {
   /**
    * After the world's clock moves, the cookies that keep a screen already signed in signed in on the new
    * time, for a product whose sessions expire. Without it, a jump past a session's life signs the screen out.
+   * Prefer extending the screen's own session (its expiry, on the world's time) and returning [] over minting a
+   * new one: a page that keeps state derived from its session (a CSRF token, a session id in memory) would send
+   * the old with the new cookie, and be signed out by the product's own checks. Return new cookies only when
+   * the product's sessions carry nothing the page keeps.
    */
   renewSignIn?(persona: Persona, app: string | undefined): Promise<StartCookie[]>;
   /**
