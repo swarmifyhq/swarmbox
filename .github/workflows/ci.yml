@@ -73,13 +73,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
-      # `npm stage publish` over OIDC needs npm 11.15 or later; Node 24's bundled npm may be older.
-      - name: npm 11.15 or later
+          # No registry-url: OIDC needs no .npmrc, and its placeholder NODE_AUTH_TOKEN would only be noise.
+      # `npm stage publish` over OIDC needs npm 11.15 or later; Node 24's bundled npm may be older. Pinned exactly
+      # (released 30 Sep 2026, past the two-week rule), so a publish never takes whatever npm came out that day.
+      - name: npm 11.21.0
         run: |
-          npm install -g npm@11
-          node -e "const [a,b]=process.argv[1].split('.').map(Number); if (a<11||(a===11&&b<15)) { console.error('npm '+process.argv[1]+' is older than 11.15'); process.exit(1) }" "$(npm --version)"
-          npm --version
+          npm install -g npm@11.21.0
+          test "$(npm --version)" = 11.21.0
       - name: Install
         run: pnpm install --frozen-lockfile --prefer-offline
       - name: Build
