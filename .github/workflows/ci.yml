@@ -63,7 +63,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write # npm provenance: the package says which commit and workflow built it
+      # npm trusted publishing: the job proves it is this repo's ci.yml with a GitHub OIDC token (no npm token is
+      # stored anywhere), and the package's provenance says which commit and workflow built it.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -72,18 +74,23 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      # `npm stage publish` over OIDC needs npm 11.15 or later; Node 24's bundled npm may be older.
+      - name: npm 11.15 or later
+        run: |
+          npm install -g npm@11
+          node -e "const [a,b]=process.argv[1].split('.').map(Number); if (a<11||(a===11&&b<15)) { console.error('npm '+process.argv[1]+' is older than 11.15'); process.exit(1) }" "$(npm --version)"
+          npm --version
       - name: Install
         run: pnpm install --frozen-lockfile --prefer-offline
       - name: Build
         run: pnpm run build
-      - name: Publish, unless this version already is
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: 'true'
+      # The trusted publisher on npmjs.com is stage-only (swarmifyhq / swarmbox / ci.yml): CI stages the version and
+      # Amir approves it on npmjs.com with 2FA (`npm stage approve`). Nothing goes live from CI alone.
+      - name: Stage this version for approval, unless it is already published
         run: |
           v=$(node -p "require('./package.json').version")
           if npm view "swarmbox@$v" version >/dev/null 2>&1; then
             echo "swarmbox@$v is already published"
           else
-            pnpm publish --no-git-checks --access public
+            npm stage publish --access public
           fi
