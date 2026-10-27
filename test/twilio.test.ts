@@ -146,6 +146,20 @@ describe('the Twilio stand-in', () => {
     expect(acct.apiKeySid).toMatch(/^SKc0ffee5b/);
   });
 
+  it('keeps an account’s credentials when asked again, and changes only the settings given', async () => {
+    const first = await twilio.account('later', { smsUrl: `${origin()}/hooks/sms` });
+    const again = await twilio.account('later', { voiceUrl: `${origin()}/hooks/voice` });
+    expect(again).toEqual(first);
+    // Both settings stand: the first one given (texts) and the one added (calls).
+    const got = (await twilio.inbound('text', { tenant: 'later', from: '+12505550123', body: 'Hi' })) as {
+      message: string;
+    };
+    expect(hooks.find((h) => h.params.get('MessageSid') === got.message)?.path).toBe('/hooks/sms');
+    const r = await callThrough(twilio, { tenant: 'later', from: '+12505550177', ringMs: 0, messageSec: 3 });
+    // (the test's product trusts only acme's token, so it refuses the call; it reached the address added)
+    expect(r.steps[0]).toMatch(new RegExp(`^rang ${origin()}/hooks/voice: \\d+$`));
+  });
+
   it('sends a text, and posts its receipts signed, sent then delivered', async () => {
     const r = await text('+12505550123');
     expect(r.status).toBe(201);

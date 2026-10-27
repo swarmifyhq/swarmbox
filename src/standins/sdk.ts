@@ -274,6 +274,14 @@ function serve(def: StandInDefinition, manifest: KitManifest): void {
       }
       case 'account':
         void reply(m.id, () => {
+          // Asked again for a tenant it has: the same account, its settings changed, as a person changes a
+          // number's webhooks in the console. A product learns some of them (its own webhook id) only after it
+          // has connected the credentials.
+          const had = accounts.get(m.tenant);
+          if (had) {
+            settings.set(m.tenant, { ...settings.get(m.tenant), ...m.settings });
+            return had;
+          }
           const made = Object.fromEntries(
             Object.entries(manifest.accounts.fields).map(([k, kind]) => [k, makeCredential(kind, m.tenant)]),
           );

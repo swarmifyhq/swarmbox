@@ -148,7 +148,7 @@ interface Product {
 interface StandInEndpoints {
   [name: string]: {
     baseUrls: Record<string, string>;
-    account(tenant: string): Promise<Record<string, string>>;
+    account(tenant: string, settings?: Record<string, string>): Promise<Record<string, string>>;
   };
 }
 ```
@@ -280,6 +280,8 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
 A product lists them with `builtinStandIn('twilio')` in `Product.standins`, and gives each tenant's account its console
 settings: `account(tenant, {smsUrl, voiceUrl, voiceStatusUrl})` for Twilio, `account(tenant, {webhookUrl})` for email,
 `account(tenant, {region, corsOrigins})` for S3. A product with one email account for everyone uses one tenant for it.
+Asked again for the same tenant, `account` gives the same credentials and changes only the settings given: a product
+that learns its webhook address only once it has connected the account (its own webhook id) sets it then.
 Expo push takes `account(tenant, {enhancedSecurity: "on"})` to turn away requests without that account's
 `accessToken`. Helcim needs none: its card form is routed in the world's browsers, so a product's pay page loads
 `start.js` from Helcim's address as it would live.
