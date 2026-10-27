@@ -5,6 +5,7 @@
   "surfaces": ["email"],
   "operations": [
     { "name": "emails.send", "method": "POST", "path": "/emails" },
+    { "name": "emails.list", "method": "GET", "path": "/emails" },
     { "name": "emails.get", "method": "GET", "path": "/emails/:id" },
     { "name": "emails.attachments", "method": "GET", "path": "/emails/:id/attachments" },
     { "name": "emails.attachment", "method": "GET", "path": "/emails/:id/attachments/:attachment" },

@@ -308,6 +308,39 @@ defineStandIn({
       }
       return json(200, { id: e.id });
     },
+    // Newest first, 20 to a page by default, as Resend lists them: how a product's checks find what was sent.
+    'emails.list': (req, ctx) => {
+      const who = caller(ctx, req);
+      if ('refused' in who) return who.refused;
+      const after = req.query.get('after');
+      const before = req.query.get('before');
+      if (after && before)
+        return err(422, 'validation_error', 'You can only use one of `after` or `before`.');
+      const limit = req.query.has('limit') ? Number(req.query.get('limit')) : 20;
+      if (!(Number.isInteger(limit) && limit >= 1 && limit <= 100))
+        return err(422, 'validation_error', 'The `limit` must be between 1 and 100.');
+      let list = [...emails.values()].filter((e) => e.tenant === who.tenant).reverse();
+      const at = (id: string) => list.findIndex((e) => e.id === id);
+      if (after) list = list.slice(at(after) + 1);
+      if (before) list = at(before) < 0 ? list : list.slice(0, at(before));
+      const page = before ? list.slice(-limit) : list.slice(0, limit);
+      return json(200, {
+        object: 'list',
+        has_more: page.length < list.length,
+        data: page.map((e) => ({
+          id: e.id,
+          to: e.to,
+          from: e.from,
+          created_at: e.created.toISOString(),
+          subject: e.subject,
+          bcc: null,
+          cc: null,
+          reply_to: e.replyTo,
+          last_event: e.last.replace(/^email\./, ''),
+          scheduled_at: null,
+        })),
+      });
+    },
     'emails.get': (req, ctx) => {
       const who = caller(ctx, req);
       if ('refused' in who) return who.refused;

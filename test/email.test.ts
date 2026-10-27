@@ -250,6 +250,23 @@ describe('the email stand-in', () => {
     ).toBe(404);
     expect((await fetch(`${email.baseUrls.api}/emails/${id}/attachments`)).status).toBe(401);
 
+    // A product's checks find it as Resend lists emails, newest first, then read its text and HTML.
+    const sent = (await (await fetch(`${email.baseUrls.api}/emails?limit=2`, { headers: auth })).json()) as {
+      object: string;
+      has_more: boolean;
+      data: { id: string; subject: string; to: string[] }[];
+    };
+    expect(sent).toMatchObject({ object: 'list', has_more: true });
+    expect(sent.data[0]).toMatchObject({
+      id,
+      subject: 'Roof contract is signed',
+      to: ['casey@contractor.example'],
+    });
+    const full = (await (await fetch(`${email.baseUrls.api}/emails/${id}`, { headers: auth })).json()) as {
+      html: string;
+    };
+    expect(full.html).toContain('/sign/abc');
+
     const [mail] = (await email.inbound('mailbox', { to: 'casey@contractor.example' })) as {
       links: string[];
       attachments: { filename: string; size: number; sha256: string; file: string }[];
