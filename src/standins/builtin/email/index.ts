@@ -4,8 +4,14 @@
 //
 // An account's console settings, as the product gives them (account(tenant, settings)): webhookUrl, the endpoint a
 // person would add in Resend's dashboard. A product with one account for everyone uses one tenant for it.
+//
+// Attachments are kept whole, as files in the stand-in's folder: listed and retrieved as Resend's API does
+// (GET /emails/:id/attachments[/:attachment_id]), each with a signed download_url on the stand-in's own address
+// that expires after an hour of the world's time, and listed with their files in the mailbox.
 
-import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { defineStandIn, json, type Reply, type StandInContext, type StandInRequest } from '../../sdk.ts';
 import manifest from './manifest.json' with { type: 'json' };
 
@@ -24,12 +30,129 @@ interface Email {
   html: string | null;
   replyTo: string | null;
   tags: { name: string; value: string }[];
-  attachments: { filename: string; bytes: number }[];
+  attachments: Attachment[];
   created: Date;
   last: string;
   /** Its Idempotency-Key in `keys`, so the key goes when the email does. */
   key: string | null;
 }
+
+interface Attachment {
+  id: string;
+  filename: string;
+  contentType: string;
+  disposition: 'attachment' | 'inline';
+  contentId: string | null;
+  size: number;
+  sha256: string;
+  /** Where its bytes are kept; null for one given as a remote path, which the stand-in can't fetch. */
+  file: string | null;
+}
+
+const TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.html': 'text/html',
+  '.ics': 'text/calendar',
+  '.zip': 'application/zip',
+};
+
+/** An attachment's bytes, in any of the forms Resend's SDKs send: base64, an array of bytes, a serialised Buffer. */
+function bytesOf(content: unknown): Buffer | null {
+  if (typeof content === 'string') return Buffer.from(content, 'base64');
+  const arr = Array.isArray(content)
+    ? content
+    : content && typeof content === 'object' && Array.isArray((content as { data?: unknown }).data)
+      ? (content as { data: unknown[] }).data
+      : null;
+  if (!arr || !arr.every((n) => Number.isInteger(n) && (n as number) >= 0 && (n as number) < 256))
+    return null;
+  return Buffer.from(arr as number[]);
+}
+
+/** An email's attachments as sent, kept as files; or the validation error Resend would give. */
+function keepAttachments(raw: unknown, emailId: string, ctx: StandInContext): Attachment[] | Reply {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return err(422, 'validation_error', 'The `attachments` field must be an array.');
+  const out: Attachment[] = [];
+  for (const a of raw as Record<string, unknown>[]) {
+    const filename = typeof a?.filename === 'string' && a.filename ? a.filename : 'attachment';
+    const bytes = a?.content === undefined ? null : bytesOf(a.content);
+    if (a?.content !== undefined && !bytes)
+      return err(422, 'validation_error', 'An attachment’s `content` must be base64 or a buffer.');
+    if (!bytes && typeof a?.path !== 'string')
+      return err(422, 'validation_error', 'An attachment needs `content` or `path`.');
+    const id = randomUUID();
+    let file: string | null = null;
+    if (bytes) {
+      folder = join(ctx.tmp, 'attachments');
+      const dir = join(folder, emailId);
+      mkdirSync(dir, { recursive: true });
+      file = join(dir, `${id}-${filename.replace(/[^\w.-]+/g, '_').slice(-100)}`);
+      writeFileSync(file, bytes);
+    }
+    const given = a.content_type ?? a.contentType;
+    out.push({
+      id,
+      filename,
+      contentType:
+        typeof given === 'string' && given
+          ? given
+          : (TYPES[extname(filename).toLowerCase()] ?? 'application/octet-stream'),
+      disposition: a.content_id || a.contentId || a.inline_content_id ? 'inline' : 'attachment',
+      contentId: String(a.content_id ?? a.contentId ?? a.inline_content_id ?? '') || null,
+      size: bytes?.length ?? 0,
+      sha256: bytes ? createHash('sha256').update(bytes).digest('hex') : '',
+      file,
+    });
+  }
+  return out;
+}
+
+/** Where attachments are kept: the stand-in's own folder, once one has come. */
+let folder = '';
+
+/** How long a download_url works, in the world's time. */
+const DOWNLOAD_FOR_MS = 60 * 60_000;
+const DOWNLOAD_KEY = randomBytes(32);
+const downloadSignature = (email: string, attachment: string, expires: string) =>
+  createHmac('sha256', DOWNLOAD_KEY).update(`${email}/${attachment}/${expires}`).digest('hex');
+
+/** An attachment as Resend's API shows it, with a download link that works for an hour. */
+function attachmentJson(e: Email, a: Attachment, ctx: StandInContext) {
+  const expires = new Date(ctx.now().getTime() + DOWNLOAD_FOR_MS);
+  const at = String(Math.floor(expires.getTime() / 1000));
+  return {
+    id: a.id,
+    filename: a.filename,
+    size: a.size,
+    content_type: a.contentType,
+    content_disposition: a.disposition,
+    ...(a.contentId ? { content_id: a.contentId } : {}),
+    download_url: a.file
+      ? `${ctx.origin}/_cdn/${e.id}/attachments/${a.id}?expires=${at}&signature=${downloadSignature(e.id, a.id, at)}`
+      : null,
+    expires_at: expires.toISOString(),
+  };
+}
+
+/** The web links in an email, from its text and its HTML's hrefs, first seen first. */
+function linksIn(e: Email): string[] {
+  const found = [
+    ...(e.text.match(/https?:\/\/[^\s<>"'()[\]]+/g) ?? []),
+    ...[...(e.html ?? '').matchAll(/href\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]!.replace(/&amp;/g, '&')),
+  ].filter((u) => /^https?:\/\//.test(u));
+  return [...new Set(found.map((u) => u.replace(/[.,;:!?]+$/, '')))].slice(0, 20);
+}
+
+const forget = (e: Email) => {
+  if (e.attachments.length && folder) rmSync(join(folder, e.id), { recursive: true, force: true });
+};
 
 /** Emails kept, oldest dropped first, and the most of a text or HTML body kept (a run sends sign-in codes, not books). */
 const EMAILS_KEPT = 2000;
@@ -137,13 +260,16 @@ defineStandIn({
             'Same idempotency key used with a different request body.',
           );
       }
+      const id = randomUUID();
+      const attachments = keepAttachments(b.attachments, id, ctx);
+      if (!Array.isArray(attachments)) return attachments;
       const tags = Array.isArray(b.tags)
         ? (b.tags as { name?: unknown; value?: unknown }[])
             .filter((t) => typeof t?.name === 'string')
             .map((t) => ({ name: String(t.name), value: String(t.value ?? '') }))
         : [];
       const e: Email = {
-        id: randomUUID(),
+        id,
         tenant,
         from: b.from,
         to,
@@ -152,12 +278,7 @@ defineStandIn({
         html: typeof b.html === 'string' ? keep(b.html) : null,
         replyTo: typeof b.reply_to === 'string' ? b.reply_to : null,
         tags,
-        attachments: Array.isArray(b.attachments)
-          ? (b.attachments as { filename?: unknown; content?: unknown }[]).map((a) => ({
-              filename: String(a.filename ?? 'attachment'),
-              bytes: typeof a.content === 'string' ? Buffer.from(a.content, 'base64').length : 0,
-            }))
-          : [],
+        attachments,
         created: ctx.now(),
         last: 'email.sent',
         key,
@@ -167,6 +288,7 @@ defineStandIn({
       for (const old of emails.values()) {
         if (emails.size <= EMAILS_KEPT) break;
         emails.delete(old.id);
+        forget(old);
         if (old.key) keys.delete(old.key);
       }
       if (!ctx.take('manual', { tenant, target: to[0] })) {
@@ -186,6 +308,39 @@ defineStandIn({
       }
       return json(200, { id: e.id });
     },
+    // Newest first, 20 to a page by default, as Resend lists them: how a product's checks find what was sent.
+    'emails.list': (req, ctx) => {
+      const who = caller(ctx, req);
+      if ('refused' in who) return who.refused;
+      const after = req.query.get('after');
+      const before = req.query.get('before');
+      if (after && before)
+        return err(422, 'validation_error', 'You can only use one of `after` or `before`.');
+      const limit = req.query.has('limit') ? Number(req.query.get('limit')) : 20;
+      if (!(Number.isInteger(limit) && limit >= 1 && limit <= 100))
+        return err(422, 'validation_error', 'The `limit` must be between 1 and 100.');
+      let list = [...emails.values()].filter((e) => e.tenant === who.tenant).reverse();
+      const at = (id: string) => list.findIndex((e) => e.id === id);
+      if (after) list = list.slice(at(after) + 1);
+      if (before) list = at(before) < 0 ? list : list.slice(0, at(before));
+      const page = before ? list.slice(-limit) : list.slice(0, limit);
+      return json(200, {
+        object: 'list',
+        has_more: page.length < list.length,
+        data: page.map((e) => ({
+          id: e.id,
+          to: e.to,
+          from: e.from,
+          created_at: e.created.toISOString(),
+          subject: e.subject,
+          bcc: null,
+          cc: null,
+          reply_to: e.replyTo,
+          last_event: e.last.replace(/^email\./, ''),
+          scheduled_at: null,
+        })),
+      });
+    },
     'emails.get': (req, ctx) => {
       const who = caller(ctx, req);
       if ('refused' in who) return who.refused;
@@ -203,6 +358,57 @@ defineStandIn({
         created_at: e.created.toISOString(),
         last_event: e.last.replace(/^email\./, ''),
       });
+    },
+    'emails.attachments': (req, ctx) => {
+      const who = caller(ctx, req);
+      if ('refused' in who) return who.refused;
+      const e = emails.get(req.params.id!);
+      if (!e || e.tenant !== who.tenant) return err(404, 'not_found', 'Email not found.');
+      const after = req.query.get('after');
+      const before = req.query.get('before');
+      if (after && before)
+        return err(422, 'validation_error', 'You can only use one of `after` or `before`.');
+      const limit = req.query.has('limit') ? Number(req.query.get('limit')) : e.attachments.length;
+      if (req.query.has('limit') && !(Number.isInteger(limit) && limit >= 1 && limit <= 100))
+        return err(422, 'validation_error', 'The `limit` must be between 1 and 100.');
+      let list = e.attachments;
+      const at = (id: string) => list.findIndex((a) => a.id === id);
+      if (after) list = list.slice(at(after) + 1);
+      if (before) list = at(before) < 0 ? list : list.slice(0, at(before));
+      const page = before ? list.slice(-limit) : list.slice(0, limit);
+      return json(200, {
+        object: 'list',
+        has_more: page.length < list.length,
+        data: page.map((a) => attachmentJson(e, a, ctx)),
+      });
+    },
+    'emails.attachment': (req, ctx) => {
+      const who = caller(ctx, req);
+      if ('refused' in who) return who.refused;
+      const e = emails.get(req.params.id!);
+      const a = e?.tenant === who.tenant ? e.attachments.find((x) => x.id === req.params.attachment) : null;
+      if (!e || !a) return err(404, 'not_found', 'Attachment not found.');
+      return json(200, { object: 'attachment', ...attachmentJson(e, a, ctx) });
+    },
+    // The download link's own host, as Resend's CDN: no key, a signature that expires.
+    'attachments.download': (req, ctx): Reply => {
+      const expires = req.query.get('expires') ?? '';
+      const given = Buffer.from(req.query.get('signature') ?? '');
+      const want = Buffer.from(downloadSignature(req.params.id!, req.params.attachment!, expires));
+      const e = emails.get(req.params.id!);
+      const a = e?.attachments.find((x) => x.id === req.params.attachment);
+      if (given.length !== want.length || !timingSafeEqual(given, want) || !a?.file)
+        return { status: 403, headers: { 'content-type': 'text/plain' }, body: 'Forbidden' };
+      if (Number(expires) * 1000 < ctx.now().getTime())
+        return { status: 403, headers: { 'content-type': 'text/plain' }, body: 'This link has expired' };
+      return {
+        status: 200,
+        headers: {
+          'content-type': a.contentType,
+          'content-disposition': `attachment; filename="${a.filename.replace(/["\\\r\n]/g, '_')}"`,
+        },
+        body: readFileSync(a.file),
+      };
     },
   },
   inbound: {
@@ -225,12 +431,21 @@ defineStandIn({
           from: e.from,
           subject: e.subject,
           text: e.text.slice(0, 2000),
+          links: linksIn(e),
+          attachments: e.attachments.map((a) => ({
+            filename: a.filename,
+            content_type: a.contentType,
+            size: a.size,
+            sha256: a.sha256,
+            file: a.file,
+          })),
           sent: e.created.toISOString(),
           last: e.last,
         }));
     },
   },
   reset() {
+    if (folder) rmSync(folder, { recursive: true, force: true });
     emails.clear();
     keys.clear();
   },
