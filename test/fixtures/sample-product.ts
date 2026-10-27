@@ -92,6 +92,63 @@ const page = (
   };
 </script></body></html>`;
 
+/**
+ * What the pointer and layered screens are tested on: a block dragged between lanes by pointer events (a drag
+ * starts only once the pointer has moved), radios whose styled labels are drawn over their inputs, and a panel
+ * with a scrim and a layer over it, neither saying it is modal, each with a "Change" button.
+ */
+const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
+  .lane { position: relative; height: 60px; width: 600px; background: #eee; margin-bottom: 20px; }
+  #block { position: absolute; left: 0; top: 10px; width: 100px; height: 40px; touch-action: none; }
+  .choice { position: relative; display: inline-block; width: 80px; height: 30px; }
+  .choice input { position: absolute; inset: 0; margin: 0; width: 100%; height: 100%; opacity: 0.01; }
+  .choice span { position: absolute; inset: 0; background: #fff; border: 1px solid #333; }
+  #panel { position: fixed; right: 0; top: 0; width: 180px; background: #fafafa; }
+  #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.2); z-index: 1; }
+  #layer { position: fixed; left: 200px; top: 300px; z-index: 2; background: #fff; }
+</style></head><body><main><h1>Board</h1>
+<div class="lane" role="group" aria-label="Lane A"><button type="button" id="block">Visit</button></div>
+<div class="lane" role="group" aria-label="Lane B"></div>
+<fieldset><legend>Who</legend>
+  <label class="choice"><input type="radio" name="who" value="Ana"><span>Ana</span></label>
+  <label class="choice"><input type="radio" name="who" value="Ben"><span>Ben</span></label>
+</fieldset>
+<button type="button" id="open-layer">Open the layer</button>
+<p role="status" id="said"></p></main>
+<section id="panel" role="dialog" aria-label="The panel"><button type="button" id="p-change">Change</button></section>
+<div id="scrim" hidden></div>
+<section id="layer" role="dialog" aria-label="Change it" hidden><button type="button" id="l-change">Change</button></section>
+<script>
+  const said = (t) => (document.getElementById('said').textContent = t);
+  const block = document.getElementById('block');
+  let down = null;
+  let dragging = false;
+  block.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; block.setPointerCapture(e.pointerId); });
+  block.addEventListener('pointermove', (e) => {
+    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) dragging = true;
+  });
+  block.addEventListener('pointerup', (e) => {
+    const wasDragging = dragging;
+    down = null;
+    dragging = false;
+    if (!wasDragging) return said('Clicked, not dragged');
+    block.releasePointerCapture(e.pointerId);
+    const lane = document.elementsFromPoint(e.clientX, e.clientY).find((n) => n.classList.contains('lane'));
+    if (!lane) return said('Dropped nowhere');
+    const x = Math.round(e.clientX - lane.getBoundingClientRect().left);
+    lane.appendChild(block);
+    block.style.left = Math.max(0, x - 50) + 'px';
+    said('Visit in ' + lane.getAttribute('aria-label') + ' at ' + x);
+  });
+  for (const r of document.querySelectorAll('input[name=who]')) r.onchange = () => said('Chose ' + r.value);
+  document.getElementById('open-layer').onclick = () => {
+    document.getElementById('scrim').hidden = false;
+    document.getElementById('layer').hidden = false;
+  };
+  document.getElementById('p-change').onclick = () => said('The panel changed it');
+  document.getElementById('l-change').onclick = () => said('The layer changed it');
+</script></body></html>`;
+
 const TECH_PAGE = `<!doctype html><html><head><title>Tech</title></head><body>
 <h1>Choose a PIN</h1><input aria-label="PIN" autofocus>
 <script>document.querySelector('input').onkeydown = (e) => { if (e.key === 'Enter') document.body.innerHTML = '<h1>Today</h1>'; };</script>
@@ -122,6 +179,7 @@ async function startSample(
   texts?: StandInEndpoint,
   failStop = false,
   cards?: StandInEndpoint,
+  clockAheadMs = 0,
 ): Promise<SampleWorld> {
   // With the Helcim stand-in, each shop has a payments account, for its own pay page.
   const cardAccounts = new Map<string, Record<string, string>>();
@@ -134,7 +192,8 @@ async function startSample(
   const feeds = new Map<string, Row[]>(tenants.map((t) => [t, []]));
   const inbox: Row[] = [];
   let seq = 0;
-  let offsetMs = 0;
+  // A kept world comes back with its clock where an earlier run left it.
+  let offsetMs = clockAheadMs;
   /** A twelve-hour session, minted on the world's time. */
   const session = (id: string) => [{ name: 'sid', value: `${id}.${Date.now() + offsetMs + 12 * 3_600_000}` }];
   const requests: string[] = [];
@@ -194,6 +253,8 @@ async function startSample(
         Number(until) > Date.now() + offsetMs ? PEOPLE(tenant).find((p) => p.id === sid) : undefined;
       if (url.pathname === '/tech/')
         return res.writeHead(200, { 'content-type': 'text/html' }).end(TECH_PAGE);
+      if (url.pathname === '/board' && who)
+        return res.writeHead(200, { 'content-type': 'text/html' }).end(BOARD_PAGE);
       if (url.pathname.startsWith('/p/'))
         return res
           .writeHead(200, { 'content-type': 'text/html' })
@@ -349,6 +410,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         spec.endpoints?.postbox,
         spec.options?.failStop === true,
         spec.endpoints?.helcim,
+        Number(spec.options?.clockAheadMs ?? 0),
       ),
     baseDomain: BASE_DOMAIN,
     // Only in a world that asks for it, so the other tests start no stand-in.

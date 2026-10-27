@@ -460,7 +460,9 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'Act on a screen',
       description:
         'Do one thing on a screen: click {role, name}, fill {label, text}, select {label, option}, press {key}, ' +
-        'draw {label} (pointer strokes, e.g. a signature pad; strokes default to a signature), or goto {path} (a ' +
+        'draw {label} (pointer strokes, e.g. a signature pad; strokes default to a signature), drag {role, name} ' +
+        'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
+        'of its box: an edge to resize; default its middle), or goto {path} (a ' +
         `path, or a full link on the ${noun}’s host as a text gives it). Elements are found by accessible role and ` +
         'name, as in screen_read; of several, the one in the open dialog is taken, else each is described for index. ' +
         'Something behind a modal dialog is refused with the dialog’s name. Returns what it did, what changed ' +
@@ -490,6 +492,36 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             option: z.string(),
             exact: z.boolean().optional(),
             index: z.int().optional(),
+          }),
+          z.object({
+            kind: z.literal('drag'),
+            role: z.string(),
+            name: z.string(),
+            exact: z.boolean().optional(),
+            index: z.int().optional(),
+            grab: z
+              .tuple([z.number().min(0).max(1), z.number().min(0).max(1)])
+              .optional()
+              .describe(
+                'Where to hold it, [x, y] as fractions of its box. Default its middle; an edge resizes',
+              ),
+            to: z
+              .object({
+                role: z.string(),
+                name: z.string(),
+                exact: z.boolean().optional(),
+                index: z.int().optional(),
+                at: z
+                  .tuple([z.number().min(0).max(1), z.number().min(0).max(1)])
+                  .optional()
+                  .describe('Where on it to drop, as fractions. Default its middle'),
+              })
+              .optional()
+              .describe('Drop it on this element. Give to or by'),
+            by: z
+              .object({ x: z.number().min(-4000).max(4000), y: z.number().min(-4000).max(4000) })
+              .optional()
+              .describe('Or move it this far, in CSS pixels (screen_image is in them)'),
           }),
           z.object({ kind: z.literal('press'), key: z.string() }),
           z.object({ kind: z.literal('goto'), path: z.string() }),
