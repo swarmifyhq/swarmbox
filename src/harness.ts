@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import type {
   CDPSession,
   Locator,
+  Page as PwPage,
   Request as PwRequest,
   Response as PwResponse,
   Route,
@@ -29,12 +30,15 @@ import {
 import {
   behindModal,
   changes,
+  coveredByOwnLabel,
   dialogsText,
+  drag,
   draw,
   glance,
   openDialogs,
   pickAmong,
   whyNotClicked,
+  type DragTo,
   type Stroke,
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
@@ -268,7 +272,22 @@ export type Action =
   /** A path on the tenant's host, or a full link to it (as a text or email gives one), port or not. */
   | { kind: 'goto'; path: string }
   /** Pointer strokes on an element found by its label (a signature pad), as fractions of its box. */
-  | { kind: 'draw'; label: string; exact?: boolean; index?: number; strokes?: Stroke[] };
+  | { kind: 'draw'; label: string; exact?: boolean; index?: number; strokes?: Stroke[] }
+  /**
+   * Drag an element found by role and name with the pointer: pressed at grab (fractions of its box, default
+   * its middle; an edge to resize), dropped on another element (at, fractions of its box, default its middle)
+   * or moved by a distance in CSS pixels.
+   */
+  | {
+      kind: 'drag';
+      role: string;
+      name: string;
+      exact?: boolean;
+      index?: number;
+      grab?: [number, number];
+      to?: { role: string; name: string; exact?: boolean; index?: number; at?: [number, number] };
+      by?: { x: number; y: number };
+    };
 
 /**
  * Playwright's URL glob, for matching inside one route: ** is anything, * is anything but a slash,
@@ -391,6 +410,16 @@ async function field(
   return (await byRole.count()) > 0 ? byRole : page.getByLabel(name, { exact });
 }
 
+/** Elements by accessible role and name, as screen_read shows them. */
+function byRole(page: PwPage, role: string, name: string, exact = false): Locator {
+  return page.getByRole(role as Parameters<PwPage['getByRole']>[0], { name, exact });
+}
+
+/** Whether a world's clock stands anywhere but on this machine's: moved, or paused. */
+export function clockMoved(state: ClockState): boolean {
+  return state.clock.offsetMs !== 0 || state.clock.frozenAt !== null;
+}
+
 /** Bring one screen's browser to the world's sandbox time, paused or running. */
 async function followClock(s: ScreenEntry, clock: { at: string; paused: boolean }): Promise<void> {
   const c = s.screen.context.clock;
@@ -468,7 +497,22 @@ export function createHarness<W extends ProductWorld>(
         standins: [...standins.values()].map((s) => s.origin),
         allowOrigins: product.browserAllow ?? [],
       });
-      return { id, spec, world, fleet, createdAt: new Date(), clock: null, feedAt: new Map(), standins };
+      const entry: WorldEntry<W> = {
+        id,
+        spec,
+        world,
+        fleet,
+        createdAt: new Date(),
+        clock: null,
+        feedAt: new Map(),
+        standins,
+      };
+      // A kept world can come back with its clock moved on an earlier run: its stand-ins and screens start
+      // on its time, not this machine's.
+      const hooks = await hooked(entry);
+      const now = hooks ? await hooks.clock().catch(() => null) : null;
+      if (now && clockMoved(now)) adoptClock(entry, now);
+      return entry;
     } catch (e) {
       try {
         await world.stop();
@@ -617,6 +661,14 @@ export function createHarness<W extends ProductWorld>(
     return up ? hooks : null;
   }
 
+  /** Take the world's clock as the one its screens and stand-ins follow from here on. */
+  function adoptClock(w: WorldEntry<W>, state: ClockState): { at: string; paused: boolean } {
+    w.clock = { at: state.process.at, paused: state.clock.frozenAt !== null };
+    // Stand-ins that sign with the world's time sign with the new one.
+    for (const standin of w.standins.values()) standin.setClock(w.clock);
+    return w.clock;
+  }
+
   /** Read a tenant's feed to its end, once, so later reads start from now. */
   async function feedCursor(w: WorldEntry<W>, tenant: string): Promise<void> {
     if (w.feedAt.has(tenant)) return;
@@ -681,11 +733,12 @@ export function createHarness<W extends ProductWorld>(
       if (signals.length > SIGNALS_KEPT) signals.shift();
     };
     // The world's time now, read before the screen opens so its first page starts on it: a running clock has
-    // moved on since it was last set.
-    if (w.clock && w.world.hooks) {
-      const now = await w.world.hooks.clock();
-      w.clock = { at: now.process.at, paused: now.clock.frozenAt !== null };
-    }
+    // moved on since it was last set, and a kept world can come back with its clock already moved.
+    // A clock that can't be read leaves the screen on the time it last had (or this machine's), as before:
+    // it never stops a screen opening.
+    const hooks = await hooked(w);
+    const now = hooks ? await hooks.clock().catch(() => null) : null;
+    if (now && (w.clock || clockMoved(now))) adoptClock(w, now);
     const device: DeviceState = { files: [], camera: null, cameraVersion: 0 };
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
       ...(w.clock ? { clock: w.clock } : {}),
@@ -911,17 +964,47 @@ export function createHarness<W extends ProductWorld>(
             const what = `role=${action.role} name="${action.name}"`;
             const t = await target(
               s,
-              page.getByRole(action.role as Parameters<typeof page.getByRole>[0], {
-                name: action.name,
-                exact: action.exact ?? false,
-              }),
+              byRole(page, action.role, action.name, action.exact),
               what,
               action.index,
             );
             await reachable(t.el, what);
             did = `clicked ${action.role} "${action.name}"${t.why ? `, ${t.why}` : ''}`;
-            await t.el.click({ timeout: 10_000 }).catch((e: unknown) => {
-              throw new HarnessError(`could not click ${what}: ${whyNotClicked(e)}`);
+            await t.el.click({ timeout: 10_000 }).catch(async (e: unknown) => {
+              // A styled radio or checkbox: its own label is drawn over it, and clicking that is the same.
+              if (!(await coveredByOwnLabel(t.el)))
+                throw new HarnessError(`could not click ${what}: ${whyNotClicked(e)}`);
+              await t.el.click({ timeout: 10_000, force: true });
+              did += ' (through its label, which is drawn over it)';
+            });
+            break;
+          }
+          case 'drag': {
+            const what = `role=${action.role} name="${action.name}"`;
+            const t = await target(
+              s,
+              byRole(page, action.role, action.name, action.exact),
+              what,
+              action.index,
+            );
+            await reachable(t.el, what);
+            if (!action.to === !action.by)
+              throw new HarnessError('a drag needs exactly one of to (an element) or by (a distance)');
+            let where: string;
+            let to: DragTo;
+            if (action.to) {
+              const dest = action.to;
+              const toWhat = `role=${dest.role} name="${dest.name}"`;
+              const d = await target(s, byRole(page, dest.role, dest.name, dest.exact), toWhat, dest.index);
+              to = { el: d.el, at: dest.at ?? [0.5, 0.5] };
+              where = `onto ${dest.role} "${dest.name}"${dest.at ? ` at ${dest.at.join(', ')}` : ''}`;
+            } else {
+              to = { by: action.by! };
+              where = `by ${action.by!.x}, ${action.by!.y} px`;
+            }
+            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${t.why ? `, ${t.why}` : ''}`;
+            await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
+              throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
             });
             break;
           }
@@ -1074,12 +1157,12 @@ export function createHarness<W extends ProductWorld>(
       const w = getWorld(worldId);
       const hooks = await harness.hooks(worldId);
       const state = move ? await hooks.moveClock(move) : await hooks.clock();
-      if (move) {
-        w.clock = { at: state.process.at, paused: state.clock.frozenAt !== null };
-        // Stand-ins that sign with the world's time sign with the new one.
-        for (const standin of w.standins.values()) standin.setClock(w.clock);
+      // A read brings the screens along too when they don't yet follow a clock that has moved (a kept world
+      // resumed with its clock moved before).
+      if (move || (!w.clock && clockMoved(state))) {
+        const clock = adoptClock(w, state);
         for (const s of [...screens.values()].filter((x) => x.worldId === worldId)) {
-          await followClock(s, w.clock);
+          await followClock(s, clock);
           // Signed in again on the new time, as a person who kept using the app would still be. A customer's
           // screen has no sign-in to keep.
           if (!s.customer && w.world.renewSignIn)

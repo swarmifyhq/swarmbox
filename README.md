@@ -20,8 +20,13 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
 - **The device and props.** Swarmbox makes the photos, documents and signatures a person would use, each tagged
   with its id. It puts them in a screen's file chooser (a tablet's camera button) or in front of its live camera,
   and sets where the device is and whether it shows notifications.
+- **Hands on the screen.** Click, type, choose, press keys, draw (a signature pad) and drag with the pointer
+  (a block onto another lane, an edge to resize), each element found by its accessible role and name. A styled
+  radio or checkbox is clicked through the label drawn over it, and of two alike in stacked layers, the one in
+  front is taken.
 - **Time.** Move a world's clock forward, and every screen follows; people stay signed in across the jump
-  (`renewSignIn`). A scenario can say when its day starts (`world.startsAt`: "09:00", or a date and time
+  (`renewSignIn`). A kept world that comes back with its clock moved on an earlier run starts its screens on its
+  own time. A scenario can say when its day starts (`world.startsAt`: "09:00", or a date and time
   in the tenant's zone, to test across a time change). Swarmbox works out times with Node's tzdata; a
   screen shows them with Chromium's own, and the two can differ on a zone whose rules changed recently.
   A time a screen shows an hour out may be that, not your product.
@@ -63,6 +68,18 @@ claude mcp add --transport http swarmbox-myproduct http://127.0.0.1:3101/mcp
 A product can take options of its own for a world (`worldOptions`, as zod fields): a tenant still
 migrating from another system, a feature switched on. `world_create` takes them as `options` and a
 scenario as `world.options`.
+
+What adapters have learnt so far:
+
+- **Mint sessions on the world's time.** A world's clock can be days ahead of the machine's, so a session dated on
+  the machine's clock may already be over to the product. Date it from the product's own clock (its hooks).
+- **Renew by extending, not replacing** (`renewSignIn`). An open page often keeps something derived from its
+  session (a CSRF token); a fresh session under it ends in the product's "sign in again".
+- **Share the server's output** (`log`): `world_log` is how an agent gets from a screen's "something went wrong" to
+  the stack.
+- **In the product's own tests, check for the tools it relies on, not Swarmbox's whole list**: each release adds
+  tools.
+- **Give each of the product's system tests its own port**, apart from the one a running sandbox uses.
 
 ### In production
 
