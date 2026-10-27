@@ -599,6 +599,31 @@ describe('a world whose clock hook is broken', () => {
   });
 });
 
+describe('a world whose hooks have a clock and no feed', () => {
+  it('acts on its screens without the server lines, and says the feed is not served', async () => {
+    const w = await h.createWorld({ tenants: ['clockonly'], options: { noFeed: true } });
+    try {
+      const screen = /^screen (s\d+)/.exec(
+        (await call('screen_open', { world: w.id, person: 'clockonly-ana' })).text,
+      )![1]!;
+      const opened = await call('screen_act', {
+        screen,
+        action: { kind: 'click', role: 'button', name: 'Send estimate' },
+      });
+      expect(opened.error, opened.text).toBe(false);
+      expect(opened.text).toContain('dialog opened');
+      expect(opened.text).not.toContain('server:');
+      const feed = await call('feed_read', { world: w.id, tenant: 'clockonly' });
+      expect(feed.error).toBe(true);
+      expect(feed.text).toContain('this product serves no /_sandbox/feed hook');
+      // The clock it does serve still moves.
+      expect((await call('world_clock', { world: w.id, jumpMs: 3_600_000 })).error).toBe(false);
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+});
+
 describe('a run of a scenario', () => {
   it('casts the scenario’s roles in their apps, logs a finding with its screenshot, and writes the report', async () => {
     saveScenario(

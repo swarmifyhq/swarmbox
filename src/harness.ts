@@ -43,7 +43,7 @@ import {
   type DragTo,
   type Stroke,
 } from './fleet/sight.ts';
-import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
+import { HooksMissing, type ClockMove, type ClockState, type FeedItem, type Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
 import { isThisMachine } from './standins/guard.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
@@ -659,6 +659,8 @@ export function createHarness<W extends ProductWorld>(
 
   /** Whether the world's product has its hooks (asked once per world, kept once they answer). */
   const hooksUp = new Map<string, boolean>();
+  /** Worlds whose product serves hooks but no feed. */
+  const feedless = new Set<string>();
   async function hooked(w: WorldEntry<W>): Promise<Hooks | null> {
     const hooks = w.world.hooks;
     if (!hooks) return null;
@@ -676,15 +678,23 @@ export function createHarness<W extends ProductWorld>(
     return w.clock;
   }
 
-  /** Read a tenant's feed to its end, once, so later reads start from now. */
+  /**
+   * Read a tenant's feed to its end, once, so later reads start from now. A product whose hooks have no feed
+   * (only a clock, say) leaves the readout without its "server:" lines, and nothing else changes.
+   */
   async function feedCursor(w: WorldEntry<W>, tenant: string): Promise<void> {
-    if (w.feedAt.has(tenant)) return;
+    if (w.feedAt.has(tenant) || feedless.has(w.id)) return;
     const hooks = await hooked(w);
     if (!hooks) return;
-    let page = await hooks.feed(tenant, { limit: 500 });
-    for (let i = 0; i < 200 && page.items.length === 500; i++)
-      page = await hooks.feed(tenant, { after: page.next, limit: 500 });
-    w.feedAt.set(tenant, page.next);
+    try {
+      let page = await hooks.feed(tenant, { limit: 500 });
+      for (let i = 0; i < 200 && page.items.length === 500; i++)
+        page = await hooks.feed(tenant, { after: page.next, limit: 500 });
+      w.feedAt.set(tenant, page.next);
+    } catch (e) {
+      if (!(e instanceof HooksMissing)) throw e;
+      feedless.add(w.id);
+    }
   }
 
   /** What the server did since a tenant's feed was last read, as lines for this screen's agent. */
