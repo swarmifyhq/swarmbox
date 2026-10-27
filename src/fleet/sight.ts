@@ -170,10 +170,15 @@ export async function pickAmong(
       info: els.map((el) => {
         const d = el.closest('dialog, [role="dialog"], [role="alertdialog"]');
         const b = el.getBoundingClientRect();
+        // What a pointer at its middle would land on: itself (or its own label), or something over it,
+        // such as the scrim a non-modal layer puts over the page behind it.
+        const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        const label = hit?.closest('label');
         return {
           dialog: d ? name(d) : null,
           inFront: Boolean(front?.contains(el)),
           visible: b.width > 0 && b.height > 0,
+          onTop: Boolean(hit && (el.contains(hit) || label?.contains(el) || label?.control === el)),
         };
       }),
     };
@@ -186,13 +191,18 @@ export async function pickAmong(
     const visible = each.filter((m) => m.visible);
     if (visible.length === 1 && count > 1)
       return { index: visible[0]!.i, why: 'the only one showing; the others are hidden' };
+    // Layers that don't say they are modal (a panel, then a dialog over it with a scrim): the one not covered.
+    const onTop = visible.filter((m) => m.onTop);
+    if (onTop.length === 1 && visible.length > 1)
+      return { index: onTop[0]!.i, why: 'the only one not covered by another layer' };
   }
   return {
     index: null,
     described: each.map(
       (m) =>
         `${m.i}: ${m.dialog ? `in "${m.dialog}"` : 'on the page'}${m.visible ? '' : ', hidden'}` +
-        `${top !== null && !m.inFront ? `, behind the dialog "${top}"` : ''}`,
+        `${top !== null && !m.inFront ? `, behind the dialog "${top}"` : ''}` +
+        `${m.visible && !m.onTop ? ', covered' : ''}`,
     ),
   };
 }
@@ -226,6 +236,21 @@ export function whyNotClicked(e: unknown): string {
   if (/element is not stable/.test(msg)) return 'it kept moving (an animation that did not finish)';
   if (/Timeout \d+ms exceeded/.test(msg)) return 'it never became clickable within 10 s';
   return msg.split('\n')[0]!.slice(0, 300);
+}
+
+/**
+ * Whether what is in front of a control is its own label: a styled radio or checkbox draws its label (or a
+ * box inside it) over the real input, and a person clicks that. Clicking the label is then the same click.
+ */
+export async function coveredByOwnLabel(el: Locator): Promise<boolean> {
+  return el
+    .evaluate((n) => {
+      const b = n.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      const label = hit?.closest('label');
+      return Boolean(label && (label.contains(n) || label.control === n));
+    })
+    .catch(() => false);
 }
 
 /** A stroke as fractions of the element's box: [x, y] pairs, 0 to 1. */
@@ -269,4 +294,37 @@ export async function draw(page: Page, el: Locator, strokes: Stroke[] = SIGNATUR
     }
     await page.mouse.up();
   }
+}
+
+/** Where a drag goes: a point on another element (fractions of its box), or a distance in CSS pixels. */
+export type DragTo = { el: Locator; at: [number, number] } | { by: { x: number; y: number } };
+
+/**
+ * Drags with the pointer, as a person would: press at a point on the element (fractions of its box), move
+ * a little first (a drag library starts a drag only once the pointer has moved), then on to the drop in small
+ * steps, pause over it (a drop target answers hovering), and let go. Both ends must be on screen.
+ */
+export async function drag(page: Page, el: Locator, grab: [number, number], to: DragTo): Promise<void> {
+  await el.scrollIntoViewIfNeeded({ timeout: 10_000 });
+  const box = await el.boundingBox({ timeout: 10_000 });
+  if (!box) throw new Error('it has no size on screen');
+  const from = { x: box.x + grab[0] * box.width, y: box.y + grab[1] * box.height };
+  let dest: { x: number; y: number };
+  if ('by' in to) dest = { x: from.x + to.by.x, y: from.y + to.by.y };
+  else {
+    const b = await to.el.boundingBox({ timeout: 10_000 });
+    if (!b) throw new Error('where it goes has no size on screen');
+    dest = { x: b.x + to.at[0] * b.width, y: b.y + to.at[1] * b.height };
+  }
+  const view = page.viewportSize();
+  if (view && (dest.x < 0 || dest.y < 0 || dest.x > view.width || dest.y > view.height))
+    throw new Error(
+      `the drop point (${Math.round(dest.x)}, ${Math.round(dest.y)}) is off the screen (${view.width}×${view.height}); scroll or drag in steps`,
+    );
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 6, from.y, { steps: 3 });
+  await page.mouse.move(dest.x, dest.y, { steps: 24 });
+  await page.waitForTimeout(150);
+  await page.mouse.up();
 }

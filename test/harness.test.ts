@@ -440,6 +440,79 @@ describe('a world of a product Swarmbox knows nothing about', () => {
   });
 });
 
+describe('the pointer, and screens with layers', () => {
+  let world = '';
+  let screen = '';
+  const act = (action: Record<string, unknown>) => call('screen_act', { screen, action });
+  beforeAll(async () => {
+    world = /^(w\d+)/.exec((await call('world_create', { tenants: ['west'] })).text)![1]!;
+    screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'west-ana', path: '/board' })).text,
+    )![1]!;
+  });
+  afterAll(async () => {
+    await call('world_destroy', { world });
+  });
+
+  it('drags a block onto another lane, and on by a distance, as a pointer does', async () => {
+    const onto = await act({
+      kind: 'drag',
+      role: 'button',
+      name: 'Visit',
+      to: { role: 'group', name: 'Lane B', at: [0.5, 0.5] },
+    });
+    expect(onto.error, onto.text).toBe(false);
+    expect(onto.text).toContain('dragged button "Visit" onto group "Lane B" at 0.5, 0.5');
+    expect(onto.text).toContain('Visit in Lane B at 300');
+    // Held at its middle (300 across the lane now), let go 100 px to the left.
+    const by = await act({ kind: 'drag', role: 'button', name: 'Visit', by: { x: -100, y: 0 } });
+    expect(by.text).toContain('Visit in Lane B at 200');
+  });
+
+  it('refuses a drag with nowhere to go, or one that ends off the screen', async () => {
+    const nowhere = await act({ kind: 'drag', role: 'button', name: 'Visit' });
+    expect(nowhere.error).toBe(true);
+    expect(nowhere.text).toContain('exactly one of to');
+    const off = await act({ kind: 'drag', role: 'button', name: 'Visit', by: { x: 3000, y: 0 } });
+    expect(off.error).toBe(true);
+    expect(off.text).toContain('off the screen');
+  });
+
+  it('clicks a styled radio through the label drawn over it', async () => {
+    const chose = await act({ kind: 'click', role: 'radio', name: 'Ben' });
+    expect(chose.error, chose.text).toBe(false);
+    expect(chose.text).toContain('through its label');
+    expect(chose.text).toContain('Chose Ben');
+  });
+
+  it('of two buttons alike in layers that are not modal, takes the one not covered', async () => {
+    await act({ kind: 'click', role: 'button', name: 'Open the layer' });
+    const changed = await act({ kind: 'click', role: 'button', name: 'Change', exact: true });
+    expect(changed.error, changed.text).toBe(false);
+    expect(changed.text).toContain('the only one not covered by another layer');
+    expect(changed.text).toContain('The layer changed it');
+  });
+});
+
+describe('a kept world whose clock moved on an earlier run', () => {
+  it('opens its screens on its own time, before anyone moves the clock', async () => {
+    const ahead = 3 * 86_400_000;
+    const w = await h.createWorld({ tenants: ['kept'], options: { clockAheadMs: ahead } });
+    try {
+      expect(w.clock).not.toBeNull();
+      const before = Date.now();
+      const opened = await call('screen_open', { world: w.id, person: 'kept-ana' });
+      const page = h.screen(/^screen (s\d+)/.exec(opened.text)![1]!).screen.page;
+      const started = await page.evaluate(() => (window as unknown as { startedAt: number }).startedAt);
+      expect(started - before).toBeGreaterThan(ahead - 60_000);
+      // Its sessions were minted on the world's time too, so it is signed in.
+      expect(await page.textContent('main')).toContain('Signed in as Ana');
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+});
+
 describe('a run of a scenario', () => {
   it('casts the scenario’s roles in their apps, logs a finding with its screenshot, and writes the report', async () => {
     saveScenario(
