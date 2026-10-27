@@ -1,7 +1,8 @@
 // The email stand-in (Resend) against a product that checks Svix signatures as Flowology's Resend code does: on its
 // own copy of the algorithm, and the timestamp within five minutes of the world's (moved) clock.
 
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -172,5 +173,98 @@ describe('the email stand-in', () => {
       subject: 'Your sign-in code',
       text: 'Your code is 482913. It works for 10 minutes.',
     });
+  });
+  it('keeps an attachment whole: listed and fetched as Resend’s API gives it, and in the mailbox with its file', async () => {
+    const pdf = Buffer.concat([Buffer.from('%PDF-1.7\n'), Buffer.alloc(3000, 7), Buffer.from('\n%%EOF\n')]);
+    const sha = createHash('sha256').update(pdf).digest('hex');
+    const r = await send('casey@contractor.example', {
+      subject: 'Roof contract is signed',
+      text: 'Everyone has signed. The signed copy is attached.',
+      html: '<p>Everyone has signed. <a href="https://campus.sample.test/sign/abc?x=1&amp;y=2">View it</a></p>',
+      attachments: [
+        { filename: 'Roof contract (signed).pdf', content: pdf.toString('base64') },
+        { filename: 'note.txt', content: [104, 105] }, // as a byte array, as Resend's Python examples send it
+      ],
+    });
+    expect(r.status).toBe(200);
+    const { id } = (await r.json()) as { id: string };
+    const auth = { authorization: `Bearer ${acct.apiKey}` };
+
+    const list = (await (
+      await fetch(`${email.baseUrls.api}/emails/${id}/attachments`, { headers: auth })
+    ).json()) as {
+      object: string;
+      has_more: boolean;
+      data: {
+        id: string;
+        filename: string;
+        size: number;
+        content_type: string;
+        download_url: string;
+        expires_at: string;
+      }[];
+    };
+    expect(list).toMatchObject({ object: 'list', has_more: false });
+    expect(list.data.map((a) => [a.filename, a.size, a.content_type])).toEqual([
+      ['Roof contract (signed).pdf', pdf.length, 'application/pdf'],
+      ['note.txt', 2, 'text/plain'],
+    ]);
+    // Paged as Resend pages: limit, then after.
+    const first = (await (
+      await fetch(`${email.baseUrls.api}/emails/${id}/attachments?limit=1`, { headers: auth })
+    ).json()) as { has_more: boolean; data: { id: string }[] };
+    expect(first).toMatchObject({ has_more: true, data: [{ id: list.data[0]!.id }] });
+    const rest = (await (
+      await fetch(`${email.baseUrls.api}/emails/${id}/attachments?after=${first.data[0]!.id}`, {
+        headers: auth,
+      })
+    ).json()) as { data: { id: string }[] };
+    expect(rest.data.map((a) => a.id)).toEqual([list.data[1]!.id]);
+
+    const one = (await (
+      await fetch(`${email.baseUrls.api}/emails/${id}/attachments/${list.data[0]!.id}`, { headers: auth })
+    ).json()) as { object: string; download_url: string };
+    expect(one.object).toBe('attachment');
+    const got = await fetch(one.download_url);
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-type')).toBe('application/pdf');
+    expect(
+      createHash('sha256')
+        .update(Buffer.from(await got.arrayBuffer()))
+        .digest('hex'),
+    ).toBe(sha);
+
+    // The link is the key: a changed signature is refused, and so is a link an hour of the world's time old.
+    expect((await fetch(one.download_url.replace(/signature=./, 'signature=0'))).status).toBe(403);
+    email.setClock({ at: new Date(WORLD_NOW + 61 * 60_000).toISOString(), paused: true });
+    expect((await fetch(one.download_url)).status).toBe(403);
+    email.setClock({ at: new Date(WORLD_NOW).toISOString(), paused: true });
+    // Another account's key doesn't see them, and no key isn't let in.
+    const other = await email.account('other2');
+    expect(
+      (
+        await fetch(`${email.baseUrls.api}/emails/${id}/attachments`, {
+          headers: { authorization: `Bearer ${other.apiKey}` },
+        })
+      ).status,
+    ).toBe(404);
+    expect((await fetch(`${email.baseUrls.api}/emails/${id}/attachments`)).status).toBe(401);
+
+    const [mail] = (await email.inbound('mailbox', { to: 'casey@contractor.example' })) as {
+      links: string[];
+      attachments: { filename: string; size: number; sha256: string; file: string }[];
+    }[];
+    expect(mail!.links).toEqual(['https://campus.sample.test/sign/abc?x=1&y=2']);
+    expect(mail!.attachments[0]).toMatchObject({
+      filename: 'Roof contract (signed).pdf',
+      size: pdf.length,
+      sha256: sha,
+    });
+    expect(createHash('sha256').update(readFileSync(mail!.attachments[0]!.file)).digest('hex')).toBe(sha);
+  });
+
+  it('refuses an attachment with neither content nor a path, as Resend does', async () => {
+    const r = await send('casey@contractor.example', { attachments: [{ filename: 'x.pdf' }] });
+    expect(r.status).toBe(422);
   });
 });

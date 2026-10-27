@@ -5,7 +5,10 @@
   "surfaces": ["email"],
   "operations": [
     { "name": "emails.send", "method": "POST", "path": "/emails" },
-    { "name": "emails.get", "method": "GET", "path": "/emails/:id" }
+    { "name": "emails.get", "method": "GET", "path": "/emails/:id" },
+    { "name": "emails.attachments", "method": "GET", "path": "/emails/:id/attachments" },
+    { "name": "emails.attachment", "method": "GET", "path": "/emails/:id/attachments/:attachment" },
+    { "name": "attachments.download", "method": "GET", "path": "/_cdn/:id/attachments/:attachment" }
   ],
   "connect": { "baseUrls": { "api": "/" } },
   "accounts": { "fields": { "apiKey": "secret", "webhookSecret": "secret" } },
@@ -33,7 +36,7 @@
     },
     {
       "kind": "mailbox",
-      "label": "What has been sent to one address, newest last",
+      "label": "What one address was sent, newest last, with links and attachment files",
       "fields": { "to": "The address" }
     }
   ],
