@@ -14,6 +14,10 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
   says what is in the way; of two buttons with one name, the one in the dialog in front is meant.
 - **Worlds.** Each run starts your product the way it is deployed, with its own data, on tenant hosts that
   resolve only inside the browsers Swarmbox launches. Nothing is shared with other runs or with real data.
+  Name what your pages load from outside (`browserAllow`: fonts, maps), or say `contain: true`, and a world's
+  browsers reach only the world, its stand-ins and those; anything else is blocked and shows as a signal.
+  Without either they can reach anything this machine can, and `world_list` says so: if your app knows a real
+  outside address (an identity provider, an API), contain it.
 - **People.** Everyone in the world, signed in without a password, each on their own screen; a tablet
   app past its first screen; a customer at a link, with no sign-in at all. Any screen can be a phone, a
   tablet either way up or a desktop, light or dark.

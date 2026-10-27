@@ -513,6 +513,78 @@ describe('a kept world whose clock moved on an earlier run', () => {
   });
 });
 
+describe('a world whose product names what its pages load from outside', () => {
+  it('keeps its browsers inside it with no stand-ins at all, and says what it blocked', async () => {
+    const outside = http.createServer((_q, res) => res.end('reached'));
+    await new Promise<void>((done) => outside.listen(0, '127.0.0.1', done));
+    const there = `http://127.0.0.1:${(outside.address() as AddressInfo).port}/`;
+    const tryFetch = (url: string) =>
+      fetch(url, { mode: 'no-cors' }).then(
+        () => 'reached',
+        () => 'blocked',
+      );
+    const named = createHarness(
+      {
+        ...sampleProduct({ scenarioDir, home: join(tmp, 'home-named') }),
+        browserAllow: ['https://fonts.example.net'],
+      },
+      { headless: true, standinSandbox: 'off' },
+    );
+    try {
+      const w = await named.createWorld({ tenants: ['shut'] });
+      expect(w.standins.size).toBe(0);
+      expect(w.contained).toBe(true);
+      const s = await named.openScreen(w.id, 'shut-ana');
+      expect(await s.screen.page.textContent('main')).toContain('Signed in as Ana');
+      // A server this machine reaches, and the internet, are both out of reach from the page.
+      expect(await s.screen.page.evaluate(tryFetch, there)).toBe('blocked');
+      expect(await s.screen.page.evaluate(tryFetch, 'https://example.com/')).toBe('blocked');
+      await expect
+        .poll(() => s.signals.find((sg) => sg.url === there)?.text)
+        .toBe('GET blocked: outside the world (not in browserAllow)');
+      expect(s.signals.filter((sg) => sg.kind === 'console-error')).toEqual([]);
+
+      // A product that names nothing is left as it was: its world says so.
+      const open = await h.createWorld({ tenants: ['open'] });
+      try {
+        expect(open.contained).toBe(false);
+        expect((await call('world_list')).text).toContain('browsers: not contained');
+        const o = await h.openScreen(open.id, 'open-ana');
+        expect(await o.screen.page.evaluate(tryFetch, there)).toBe('reached');
+      } finally {
+        await h.destroyWorld(open.id);
+      }
+    } finally {
+      await named.shutdown();
+      outside.close();
+    }
+  });
+
+  it('can be contained on purpose without naming anything', async () => {
+    const shut = createHarness(
+      { ...sampleProduct({ scenarioDir, home: join(tmp, 'home-shut') }), contain: true },
+      { headless: true, standinSandbox: 'off' },
+    );
+    try {
+      const w = await shut.createWorld({ tenants: ['quiet'] });
+      expect(w.contained).toBe(true);
+      const s = await shut.openScreen(w.id, 'quiet-ana');
+      expect(
+        await s.screen.page.evaluate(
+          (u) =>
+            fetch(u, { mode: 'no-cors' }).then(
+              () => 'reached',
+              () => 'blocked',
+            ),
+          'https://example.com/',
+        ),
+      ).toBe('blocked');
+    } finally {
+      await shut.shutdown();
+    }
+  });
+});
+
 describe('a world whose clock hook is broken', () => {
   it('still opens screens, on this machine’s time', async () => {
     const w = await h.createWorld({ tenants: ['broken'], options: { clockBroken: true } });

@@ -20,10 +20,12 @@ import type {
 } from 'playwright-core';
 import type { CheckResult, Settled } from './checks.ts';
 import {
+  contained,
   launchFleet,
   setCookies,
   type Appearance,
   type Fleet,
+  type FleetOptions,
   type Screen,
   type Who,
 } from './fleet/browser.ts';
@@ -68,6 +70,8 @@ export interface WorldEntry<W extends ProductWorld = ProductWorld> {
   feedAt: Map<string, string>;
   /** The world's stand-ins, by name. */
   standins: Map<string, StandIn>;
+  /** Whether its browsers are kept inside it (Product.contain): nothing they load reaches outside the world. */
+  contained: boolean;
 }
 
 export interface ScreenEntry {
@@ -486,7 +490,7 @@ export function createHarness<W extends ProductWorld>(
       throw e;
     }
     try {
-      const fleet = await launchFleet({
+      const fleetOptions: FleetOptions = {
         baseDomain: world.baseDomain,
         port: world.port,
         headless: options.headless ?? false,
@@ -496,12 +500,15 @@ export function createHarness<W extends ProductWorld>(
         // product loads from outside.
         standins: [...standins.values()].map((s) => s.origin),
         allowOrigins: product.browserAllow ?? [],
-      });
+        contain: product.contain ?? product.browserAllow !== undefined,
+      };
+      const fleet = await launchFleet(fleetOptions);
       const entry: WorldEntry<W> = {
         id,
         spec,
         world,
         fleet,
+        contained: contained(fleetOptions),
         createdAt: new Date(),
         clock: null,
         feedAt: new Map(),
@@ -755,6 +762,8 @@ export function createHarness<W extends ProductWorld>(
           if (/net::ERR_/.test(m.text())) {
             if (ref.entry && ref.entry.network.mode !== 'online') return;
             if (cutUrls.delete(m.location().url)) return;
+            // Blocked by containment: the request-failed signal names it already.
+            if (/net::ERR_BLOCKED_BY_CLIENT/.test(m.text())) return;
           }
           signal('console-error', m.text(), m.location().url || undefined);
         });
@@ -768,6 +777,13 @@ export function createHarness<W extends ProductWorld>(
           // Aborted by the page itself: a reload or a move away cancels what was in flight, as does the
           // app's own AbortController. Nothing failed.
           if (r.failure()?.errorText === 'net::ERR_ABORTED') return;
+          // Blocked by containment: the product reaching outside its world, which is worth seeing by name.
+          if (r.failure()?.errorText.startsWith('net::ERR_BLOCKED_BY_CLIENT'))
+            return signal(
+              'request-failed',
+              `${r.method()} blocked: outside the world (not in browserAllow)`,
+              r.url(),
+            );
           signal('request-failed', `${r.method()} ${r.failure()?.errorText ?? 'failed'}`, r.url());
         });
       },
