@@ -37,15 +37,41 @@ const ASSETS = new Set(['image', 'font', 'stylesheet', 'script', 'media', 'manif
 /** Bodies worth reading back: what an app's own calls answer with. */
 const READ_BODY = new Set(['fetch', 'xhr', 'document']);
 
-const SECRET_NAME =
-  /pass(word|code|phrase)|secret|token|authori[sz]ation|cookie|session|api[-_]?key|signature|credential|otp/i;
+/** A name is a secret's when its last word is one of these, or its last two are one of the pairs. */
+const SECRET_WORDS = new Set([
+  'password',
+  'passwd',
+  'passcode',
+  'passphrase',
+  'secret',
+  'token',
+  'auth',
+  'authorization',
+  'cookie',
+  'session',
+  'signature',
+  'credential',
+  'credentials',
+  'otp',
+]);
+const SECRET_PAIRS = new Set(['apikey', 'sessionid', 'accesskey', 'privatekey', 'secretkey']);
 /** A JWT or JWE (base64url segments, the first a JSON header), or an opaque string long enough to be a key. */
 const TOKEN_SHAPED = /^(eyJ[\w-]*\.[\w.-]+|(Bearer|Basic)\s+\S+|[A-Za-z0-9_+/=-]{40,})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REDACTED = '[redacted]';
 
+/** By its words, so that "two_signature_threshold" is not a secret and "x-api-key" or "AuthToken" is. */
+function secretName(name: string): boolean {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return SECRET_WORDS.has(words.at(-1) ?? '') || SECRET_PAIRS.has(words.slice(-2).join(''));
+}
+
 function secretValue(name: string, value: string): boolean {
-  return SECRET_NAME.test(name) || (TOKEN_SHAPED.test(value) && !UUID.test(value));
+  return secretName(name) || (TOKEN_SHAPED.test(value) && !UUID.test(value));
 }
 
 /** An address with its secret query values replaced; on `origin`, only its path and query. */
@@ -72,7 +98,7 @@ function redactJson(v: unknown, name = ''): unknown {
   if (v && typeof v === 'object')
     return Object.fromEntries(
       Object.entries(v).map(([k, x]) =>
-        SECRET_NAME.test(k) && x !== null && typeof x !== 'object' ? [k, REDACTED] : [k, redactJson(x, k)],
+        secretName(k) && x !== null && typeof x !== 'object' ? [k, REDACTED] : [k, redactJson(x, k)],
       ),
     );
   return v;
@@ -100,6 +126,15 @@ function bounded(s: string): string {
   return s.length > BODY_KEPT ? `${s.slice(0, BODY_KEPT)}… (${s.length} characters)` : s;
 }
 
+function mainFrame(r: PwRequest): boolean {
+  try {
+    return r.frame().parentFrame() === null;
+  } catch {
+    // A service worker's request has no frame.
+    return false;
+  }
+}
+
 export interface RequestLog {
   records: RequestRecord[];
   /** The record a response belongs to, for the readout's refusal lines. */
@@ -119,6 +154,15 @@ export function requestLog(origin: string): RequestLog {
     records,
     seqOf: (r) => live.get(r)?.rec.seq,
     onRequest(r) {
+      // A page load ends what the page before it had open (a live stream, a long poll), and Chromium reports
+      // no end for a response it had already started streaming.
+      if (r.isNavigationRequest() && mainFrame(r))
+        for (const rec of records)
+          if (rec.state === 'open') {
+            rec.state = 'failed';
+            rec.failure = 'cut off by a page load';
+            rec.ms = Date.now() - Date.parse(rec.at);
+          }
       const contentType = r.headers()['content-type'];
       const post = r.postData();
       const rec: RequestRecord = {

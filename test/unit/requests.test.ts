@@ -47,6 +47,15 @@ describe('what a screen’s request log keeps', () => {
     );
     expect(redactBody(`Bearer ${'x'.repeat(30)}`)).toBe('[redacted]');
     expect(redactBody('+15550100')).toBe('+15550100');
+    // By the name's last words: a setting about signatures is not a secret, a header's key is.
+    expect(
+      redactBody(
+        '{"two_signature_threshold":"25000.00","x-api-key":"k","sessionId":"s","sid":"AC1"}',
+        'application/json',
+      ),
+    ).toBe(
+      '{"two_signature_threshold":"25000.00","x-api-key":"[redacted]","sessionId":"[redacted]","sid":"AC1"}',
+    );
     // Words that only contain "pass" are not secrets.
     expect(redactBody('{"passenger":"Ana","bypass":false}', 'application/json')).toBe(
       '{"passenger":"Ana","bypass":false}',

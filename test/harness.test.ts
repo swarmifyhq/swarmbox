@@ -384,6 +384,11 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(after).not.toContain('/api/approve');
     expect(after).toContain('/api/live/stream');
     expect(after).not.toContain('sent:');
+    // A page load ends the stream the page before it had open.
+    await call('screen_act', { screen, action: { kind: 'goto', path: '/' } });
+    expect((await call('screen_requests', { screen, match: '/api/live/stream' })).text).toMatch(
+      /GET \/api\/live\/stream\?token=\[redacted\] → failed: cut off by a page load/,
+    );
     expect((await call('screen_requests', { screen, match: '/nowhere' })).text).toBe(
       `${screen}: no requests matching "/nowhere"`,
     );
