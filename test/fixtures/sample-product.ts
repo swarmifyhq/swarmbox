@@ -180,6 +180,7 @@ async function startSample(
   failStop = false,
   cards?: StandInEndpoint,
   clockAheadMs = 0,
+  clockBroken = false,
 ): Promise<SampleWorld> {
   // With the Helcim stand-in, each shop has a payments account, for its own pay page.
   const cardAccounts = new Map<string, Record<string, string>>();
@@ -217,6 +218,9 @@ async function startSample(
         const path = url.pathname.slice('/_sandbox'.length);
         if (path === '/health') return json(200, { ok: true, result: {} });
         if (path === '/clock') {
+          // A product whose clock hook is broken: reading it fails.
+          if (clockBroken && req.method === 'GET')
+            return json(500, { ok: false, error: 'clock unavailable' });
           if (req.method === 'POST') {
             const move = JSON.parse(body) as { jumpMs?: number; to?: string };
             offsetMs = move.to ? Date.parse(move.to) - Date.now() : offsetMs + Number(move.jumpMs ?? 0);
@@ -411,6 +415,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         spec.options?.failStop === true,
         spec.endpoints?.helcim,
         Number(spec.options?.clockAheadMs ?? 0),
+        spec.options?.clockBroken === true,
       ),
     baseDomain: BASE_DOMAIN,
     // Only in a world that asks for it, so the other tests start no stand-in.
