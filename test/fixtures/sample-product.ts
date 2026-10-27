@@ -181,6 +181,7 @@ async function startSample(
   cards?: StandInEndpoint,
   clockAheadMs = 0,
   clockBroken = false,
+  noFeed = false,
 ): Promise<SampleWorld> {
   // With the Helcim stand-in, each shop has a payments account, for its own pay page.
   const cardAccounts = new Map<string, Record<string, string>>();
@@ -233,6 +234,8 @@ async function startSample(
             },
           });
         }
+        // A product that serves a clock and no feed answers as its framework does: a plain 404.
+        if (path === '/feed' && noFeed) return json(404, { detail: 'Not Found' });
         if (path === '/feed') {
           const rows = feeds.get(url.searchParams.get('company') ?? '') ?? [];
           const after = Number(url.searchParams.get('after') ?? 0);
@@ -416,6 +419,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         spec.endpoints?.helcim,
         Number(spec.options?.clockAheadMs ?? 0),
         spec.options?.clockBroken === true,
+        spec.options?.noFeed === true,
       ),
     baseDomain: BASE_DOMAIN,
     // Only in a world that asks for it, so the other tests start no stand-in.
