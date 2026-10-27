@@ -734,11 +734,11 @@ export function createHarness<W extends ProductWorld>(
     };
     // The world's time now, read before the screen opens so its first page starts on it: a running clock has
     // moved on since it was last set, and a kept world can come back with its clock already moved.
+    // A clock that can't be read leaves the screen on the time it last had (or this machine's), as before:
+    // it never stops a screen opening.
     const hooks = await hooked(w);
-    if (hooks) {
-      const now = await hooks.clock();
-      if (w.clock || clockMoved(now)) adoptClock(w, now);
-    }
+    const now = hooks ? await hooks.clock().catch(() => null) : null;
+    if (now && (w.clock || clockMoved(now))) adoptClock(w, now);
     const device: DeviceState = { files: [], camera: null, cameraVersion: 0 };
     const screen = await w.fleet.open(who, path ?? who.signIn?.path ?? '/', {
       ...(w.clock ? { clock: w.clock } : {}),

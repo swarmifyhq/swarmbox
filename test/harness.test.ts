@@ -513,6 +513,20 @@ describe('a kept world whose clock moved on an earlier run', () => {
   });
 });
 
+describe('a world whose clock hook is broken', () => {
+  it('still opens screens, on this machine’s time', async () => {
+    const w = await h.createWorld({ tenants: ['broken'], options: { clockBroken: true } });
+    try {
+      expect(w.clock).toBeNull();
+      const opened = await call('screen_open', { world: w.id, person: 'broken-ana' });
+      expect(opened.error, opened.text).toBe(false);
+      expect(opened.text).toContain('Signed in as Ana');
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+});
+
 describe('a run of a scenario', () => {
   it('casts the scenario’s roles in their apps, logs a finding with its screenshot, and writes the report', async () => {
     saveScenario(
