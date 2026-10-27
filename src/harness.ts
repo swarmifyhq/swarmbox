@@ -45,6 +45,13 @@ import {
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import {
+  requestLog,
+  selectRequests,
+  type RequestLog,
+  type RequestQuery,
+  type RequestRecord,
+} from './requests.ts';
 import { isThisMachine } from './standins/guard.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
 import {
@@ -101,6 +108,8 @@ export interface ScreenEntry {
   releaseStalled(): void;
   /** Its camera and the files queued for its file choosers. */
   device: DeviceState;
+  /** What it asked its servers for, newest last (bounded, secrets redacted). */
+  requests: RequestLog;
 }
 
 /**
@@ -162,19 +171,28 @@ const WORKER_MS = 1_200;
 const PORT_RANGE = 50;
 
 /** A request the tenant's server refused, as one line: what was asked, the status and the reason. */
-async function refusal(r: PwResponse, origin: string): Promise<string> {
+async function refusal(r: PwResponse, origin: string, seq?: number): Promise<string> {
   let why = '';
   try {
     const b = (await r.json()) as {
       error?: { code?: string; message?: string };
       code?: string;
       message?: string;
+      /** FastAPI's: a string, or its validation errors. */
+      detail?: string | { msg?: string; loc?: unknown[] }[];
     };
-    why = [b.error?.code ?? b.code, b.error?.message ?? b.message].filter(Boolean).join(': ');
+    const detail =
+      typeof b.detail === 'string'
+        ? b.detail
+        : Array.isArray(b.detail)
+          ? b.detail.map((d) => [d.loc?.slice(1).join('.'), d.msg].filter(Boolean).join(': ')).join('; ')
+          : undefined;
+    why = [b.error?.code ?? b.code, b.error?.message ?? b.message ?? detail].filter(Boolean).join(': ');
   } catch {
     // Not JSON: the status says enough.
   }
-  return `${r.request().method()} ${r.url().slice(origin.length) || '/'} → ${r.status()}${why ? ` ${why.slice(0, 200)}` : ''}`;
+  const at = seq === undefined ? '' : ` (screen_requests #${seq})`;
+  return `${r.request().method()} ${r.url().slice(origin.length) || '/'} → ${r.status()}${why ? ` ${why.slice(0, 200)}` : ''}${at}`;
 }
 
 /** A port the system has free right now: for a world whose port must be known before it starts. */
@@ -228,6 +246,8 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
   openLink(worldId: string, link: string, options?: Appearance & { address?: string }): Promise<ScreenEntry>;
   /** Change what a screen's network does: airplane mode, a signal that stalls, a slow one, or back to normal. */
   setNetwork(screenId: string, mode: NetworkMode): Promise<void>;
+  /** What a screen asked its servers for, newest last. */
+  requests(screenId: string, query?: RequestQuery): RequestRecord[];
   screens(): ScreenEntry[];
   screen(screenId: string): ScreenEntry;
   read(screenId: string): Promise<string>;
@@ -729,6 +749,7 @@ export function createHarness<W extends ProductWorld>(
     // Their addresses too: Chrome's console line for a request cut off carries the URL, not the request.
     const cutUrls = new Set<string>();
     const stalled = new Set<Route>();
+    const requests = requestLog(w.fleet.originFor(persona.tenant));
     const signal = (kind: Signal['kind'], text: string, url?: string) => {
       signals.push({
         at: new Date().toISOString(),
@@ -768,7 +789,11 @@ export function createHarness<W extends ProductWorld>(
           signal('console-error', m.text(), m.location().url || undefined);
         });
         ctx.on('weberror', (e) => signal('page-error', String(e.error()?.stack ?? e.error())));
+        ctx.on('request', (r) => requests.onRequest(r));
+        ctx.on('requestfinished', (r) => void requests.onFinished(r));
+        ctx.on('requestfailed', (r) => requests.onFailed(r));
         ctx.on('response', (r) => {
+          requests.onResponse(r);
           if (r.status() >= 500) signal('server-error', `${r.status()} ${r.request().method()}`, r.url());
         });
         ctx.on('requestfailed', (r) => {
@@ -818,6 +843,7 @@ export function createHarness<W extends ProductWorld>(
       signals,
       network: { mode: 'online' },
       device,
+      requests,
       releaseStalled: () => {
         for (const route of stalled) {
           deliberate.add(route.request());
@@ -932,6 +958,8 @@ export function createHarness<W extends ProductWorld>(
     screens: () => [...screens.values()],
     screen: getScreen,
 
+    requests: (screenId, query) => selectRequests(getScreen(screenId).requests.records, query),
+
     async setNetwork(screenId, mode) {
       const s = getScreen(screenId);
       // The screen's one network route (attach) reads the mode on every request, so a change is just
@@ -970,7 +998,8 @@ export function createHarness<W extends ProductWorld>(
       const origin = w.fleet.originFor(s.persona.tenant);
       const refused: Promise<string>[] = [];
       const onResponse = (r: PwResponse) => {
-        if (r.status() >= 400 && r.url().startsWith(origin)) refused.push(refusal(r, origin));
+        if (r.status() >= 400 && r.url().startsWith(origin))
+          refused.push(refusal(r, origin, s.requests.seqOf(r.request())));
       };
       page.on('response', onResponse);
       let did = '';
