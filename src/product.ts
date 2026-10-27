@@ -195,10 +195,18 @@ export interface Product<W extends ProductWorld = ProductWorld> {
   /** Tenants' hosts are `<tenant>.<baseDomain>`, known before a world starts: needed for stand-ins. */
   baseDomain?: string;
   /**
-   * Origins outside the world the product's pages load from (web fonts, maps). In a world whose browsers play a
-   * provider's pages, the browsers reach only the world's own hosts, its stand-ins and these; the rest is blocked.
+   * Origins outside the world the product's pages load from (web fonts, maps). Giving them contains the world's
+   * browsers (see `contain`): they reach only the world's own hosts, its stand-ins and these; the rest is blocked.
    */
   browserAllow?: string[];
+  /**
+   * Keep a world's browsers inside it: the world's own hosts, its stand-ins and `browserAllow`, and nothing else
+   * (no request, WebSocket or service worker reaches out, this machine's other servers included). Default: on when
+   * `browserAllow` is given, off otherwise; always on while a stand-in plays a provider's pages. A product whose
+   * pages know a real outside address (an identity provider, an API) should say true: off, a signed-out page can
+   * reach it.
+   */
+  contain?: boolean;
   /**
    * Options of the product's own for a world, as zod fields with descriptions: a tenant still migrating
    * from another system, a feature switched on. world_create and a scenario's world.options take them.

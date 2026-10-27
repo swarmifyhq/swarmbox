@@ -50,6 +50,9 @@ function describeWorld<W extends ProductWorld>(h: Harness<W>, id: string): strin
     ...(w.world.notes?.() ?? []).map((n) => `  ${n}`),
     ...w.world.tenants.map((t) => `  ${t}: ${w.world.origin(t)}`),
     `  screens: ${open.map((s) => `${s.id} ${s.persona.label} [${s.controller}]`).join('; ') || 'none'}`,
+    w.contained
+      ? '  browsers: contained (only the world, its stand-ins and browserAllow)'
+      : '  browsers: not contained (Product.contain is off): its pages can reach anything this machine can',
     ...(w.standins.size
       ? [
           `  stand-ins: ${[...w.standins.values()].map((s) => `${s.manifest.name} (${s.manifest.provider}) at ${s.origin}`).join('; ')}`,
@@ -72,8 +75,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'Create a world',
       description:
         `Start a world: a running copy of ${product.name} with its own data and the ${noun}s given (default ` +
-        'one), started the way it is deployed. Outside services are fakes; nothing leaves this machine. Seed ' +
-        'adds demo data and takes longer.',
+        'one), started the way it is deployed, with stand-ins for the outside services the product names. ' +
+        'world_list says whether its browsers are contained. Seed adds demo data and takes longer.',
       inputSchema: {
         tenants: z
           .array(z.string().regex(/^[a-z][a-z0-9-]{1,38}[a-z0-9]$/))

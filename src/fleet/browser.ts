@@ -54,11 +54,15 @@ export interface FleetOptions {
    */
   routes?: { origin: string; to: string }[];
   /**
-   * With routes, where else the browsers may go: the world's stand-ins and what the product loads from outside.
-   * A routed provider page is the stand-in's own code in the browser, so the world's browsers then reach only the
-   * world's hosts, the routed origins and these; every other request and WebSocket is blocked.
+   * In a contained world, where else the browsers may go: what the product loads from outside (Product.browserAllow).
    */
   allowOrigins?: string[];
+  /**
+   * Keep the browsers inside the world (Product.contain): they reach only the world's hosts, its stand-ins, the
+   * routed origins and allowOrigins; every other request and WebSocket is blocked, and there are no service workers.
+   * Always so with routes: a routed provider page is the stand-in's own code in the browser.
+   */
+  contain?: boolean;
   /**
    * The world's stand-ins' own addresses (http://127.0.0.1:<port>): reachable from its browsers (a presigned
    * upload goes straight to S3's), but when its browsers play a provider's pages, only through the same checked
@@ -154,7 +158,12 @@ async function answerRouted(route: Route, options: FleetOptions): Promise<void> 
   }
 }
 
-/** Whether a URL is inside a world whose browsers play a provider's pages (see FleetOptions.allowOrigins). */
+/** Whether a world's browsers are kept inside it (FleetOptions.contain). */
+export function contained(options: FleetOptions): boolean {
+  return Boolean(options.contain || options.routes?.length);
+}
+
+/** Whether a URL is inside a contained world (FleetOptions.contain): somewhere its browsers may go. */
 export function insideWorld(url: string, options: FleetOptions): boolean {
   let u: URL;
   try {
@@ -307,8 +316,8 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         // The server runs in UTC; a person's browser runs where they are. "Today", "Yesterday" and the
         // year on a byline are decided here, so this machine's zone must not leak in.
         timezoneId: who.persona.timeZone,
-        // A contained world has no service workers: one on a routed origin would answer outside the routes.
-        ...(options.routes?.length ? { serviceWorkers: 'block' as const } : {}),
+        // A contained world has no service workers: one would answer outside the routes and the checks below.
+        ...(contained(options) ? { serviceWorkers: 'block' as const } : {}),
         ...shape,
         ...(colorScheme ? { colorScheme } : {}),
       });
@@ -336,7 +345,7 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         route.continue({ headers: { ...(await route.request().allHeaders()), 'x-forwarded-for': ip } }),
       );
       if (signIn?.cookies?.length) await setCookies(context, origin, signIn.cookies);
-      if (options.routes?.length) {
+      if (contained(options)) {
         // Contained: nothing leaves the world but to its stand-ins and what the product loads from outside.
         await context.route(
           (url) => !insideWorld(url.href, options),
@@ -351,7 +360,7 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
       // reached through the same proxy, so every redirect any of them answers is checked.
       const proxied = [
         ...(options.routes ?? []).map((r) => r.origin),
-        ...(options.routes?.length ? (options.standins ?? []) : []),
+        ...(contained(options) ? (options.standins ?? []) : []),
       ];
       for (const o of proxied)
         await context.route(

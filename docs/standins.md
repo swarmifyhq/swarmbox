@@ -236,7 +236,8 @@ A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past 
   - Never the product's own hosts, this machine, or an origin in `Product.browserAllow`.
   - A world whose browsers play a provider's pages is contained: they reach only the world's hosts, the routed
     origins, the world's stand-ins and `Product.browserAllow` (what the product loads from outside: fonts, maps).
-    Every other request and WebSocket is blocked.
+    Every other request and WebSocket is blocked. So is any world of a product that gives `browserAllow` or says
+    `contain: true`, stand-ins or not (`Product.contain`).
   - The routed pages carry a CSP of their own origin only, replacing any the stand-in sends.
   - A stand-in's redirects are Swarmbox's to follow, never the browser's, since a browser's next hop skips the
     routes: out of the world is refused (502); to a routed origin or a stand-in's own address, a page is sent on
