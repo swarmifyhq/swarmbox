@@ -109,7 +109,10 @@ server does. Swarmbox does everything that touches the network, for every stand-
   behind one port serves every tenant's host. The stand-in signs the URL as written. `duplicate` and `reorder` are
   applied here.
 - **It keeps the log.** Every request, answer and delivery, in order. So `standin_log` works the same for every
-  stand-in, and a stand-in can't hide or invent traffic.
+  stand-in, and a stand-in can't hide or invent traffic. Secrets are replaced before anything is kept, as in a
+  screen's own request log: values whose names say they are secrets (in JSON, forms, query strings, XML elements
+  and attributes, and name/value pairs such as a report server's `<Name>Password</Name><Value>…</Value>`), and
+  values shaped like tokens. Each body is then cut to 4 KB.
 
 The stand-in's own messages are for what only it knows:
 

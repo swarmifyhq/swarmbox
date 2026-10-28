@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SandboxManager as SandboxManagerApi } from '@anthropic-ai/sandbox-runtime';
+import { redactBody, redactTarget } from '../redact.ts';
 import { GENERAL, Manifest, operationOf, type Behaviour } from './manifest.ts';
 import { decode, encode, type ClockState, type Rule, type ToStandIn } from './protocol.ts';
 import {
@@ -183,8 +184,18 @@ export function sandboxHooks(pathname: string): boolean {
   }
   return true;
 }
-const cut = (b: Buffer) =>
-  b.length > 4096 ? `${b.subarray(0, 4096).toString('utf8')}…` : b.toString('utf8');
+/**
+ * A body as the log keeps it: its secrets replaced first (a body cut mid-value can't be read whole), then cut
+ * to 4 KB. Past 1 MB only its start is read.
+ */
+const logged = (b: Buffer | string, contentType = '') => {
+  const buf = typeof b === 'string' ? Buffer.from(b) : b;
+  const r = redactBody(
+    (buf.length > 1024 * 1024 ? buf.subarray(0, 4096) : buf).toString('utf8'),
+    contentType,
+  );
+  return r.length > 4096 ? `${r.slice(0, 4096)}…` : r;
+};
 
 let sandboxReady: Promise<typeof SandboxManagerApi> | undefined;
 /** The sandbox runtime, set up once per process with no network for anything it wraps. */
@@ -510,9 +521,9 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
           operation: null,
           tenant: target.hostname === options.baseDomain ? null : target.hostname.split('.')[0]!,
           method,
-          target: plain(url, 500),
+          target: redactTarget(plain(url, 500)),
           status,
-          sent: cut(body),
+          sent: logged(body, headers['content-type']),
           answered,
         });
         done(answer);
@@ -538,7 +549,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
               const all = Buffer.concat(chunks);
               const status = res.statusCode ?? 0;
               const contentType = String(res.headers['content-type'] ?? '').slice(0, 200);
-              finish(status, cut(all), { status, contentType, body: all });
+              finish(status, logged(all, contentType), { status, contentType, body: all });
             });
             res.on('error', (e) => finish(0, e.message));
           },
@@ -690,10 +701,17 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       operation: op?.name ?? null,
       tenant,
       method,
-      target: `${url.pathname}${url.search}`,
+      target: redactTarget(`${url.pathname}${url.search}`),
     };
+    const sent = logged(body, headers['content-type']);
     const answer = (status: number, h: Record<string, string>, b: Buffer, behaviour?: Behaviour) => {
-      record({ ...base, sent: cut(body), status, answered: cut(b), ...(behaviour ? { behaviour } : {}) });
+      record({
+        ...base,
+        sent,
+        status,
+        answered: logged(b, h['content-type']),
+        ...(behaviour ? { behaviour } : {}),
+      });
       res.writeHead(status, h).end(b);
     };
 
@@ -705,7 +723,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
         .end(JSON.stringify({ error: 'Swarmbox stand-ins refuse live credentials' }));
     }
     if (takeGeneral('hang', base.operation, tenant)) {
-      record({ ...base, sent: cut(body), status: null, behaviour: 'hang' });
+      record({ ...base, sent, status: null, behaviour: 'hang' });
       hanging.add(res);
       res.on('close', () => hanging.delete(res));
       return;
@@ -850,7 +868,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
         method: '-',
         target: kind,
         status: null,
-        sent: JSON.stringify(body).slice(0, 4096),
+        sent: logged(JSON.stringify(body), 'application/json'),
       });
       return value;
     },
