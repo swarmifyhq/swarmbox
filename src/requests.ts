@@ -3,9 +3,12 @@
 // agent reads the rest of them, and sees what a page keeps open (a live stream) or keeps asking for (polling).
 //
 // Nothing secret is kept: no headers at all (cookies, authorization), and in addresses and bodies any value
-// whose name says it is a secret, and any value shaped like a token, is replaced before it is stored.
+// whose name says it is a secret, and any value shaped like a token, is replaced before it is stored (redact.ts).
 
 import type { Request as PwRequest, Response as PwResponse } from 'playwright-core';
+import { redactBody, redactUrl } from './redact.ts';
+
+export { redactBody, redactUrl };
 
 export interface RequestRecord {
   /** Counts the screen's requests from 1, so a later read can ask for what came after. */
@@ -36,91 +39,6 @@ export const BODY_KEPT = 2000;
 const ASSETS = new Set(['image', 'font', 'stylesheet', 'script', 'media', 'manifest', 'texttrack', 'other']);
 /** Bodies worth reading back: what an app's own calls answer with. */
 const READ_BODY = new Set(['fetch', 'xhr', 'document']);
-
-/** A name is a secret's when its last word is one of these, or its last two are one of the pairs. */
-const SECRET_WORDS = new Set([
-  'password',
-  'passwd',
-  'passcode',
-  'passphrase',
-  'secret',
-  'token',
-  'auth',
-  'authorization',
-  'cookie',
-  'session',
-  'signature',
-  'credential',
-  'credentials',
-  'otp',
-]);
-const SECRET_PAIRS = new Set(['apikey', 'sessionid', 'accesskey', 'privatekey', 'secretkey']);
-/** A JWT or JWE (base64url segments, the first a JSON header), or an opaque string long enough to be a key. */
-const TOKEN_SHAPED = /^(eyJ[\w-]*\.[\w.-]+|(Bearer|Basic)\s+\S+|[A-Za-z0-9_+/=-]{40,})$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const REDACTED = '[redacted]';
-
-/** By its words, so that "two_signature_threshold" is not a secret and "x-api-key" or "AuthToken" is. */
-function secretName(name: string): boolean {
-  const words = name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-  return SECRET_WORDS.has(words.at(-1) ?? '') || SECRET_PAIRS.has(words.slice(-2).join(''));
-}
-
-function secretValue(name: string, value: string): boolean {
-  return secretName(name) || (TOKEN_SHAPED.test(value) && !UUID.test(value));
-}
-
-/** An address with its secret query values replaced; on `origin`, only its path and query. */
-export function redactUrl(url: string, origin?: string): string {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    return url;
-  }
-  for (const [k, v] of [...u.searchParams]) if (secretValue(k, v)) u.searchParams.set(k, REDACTED);
-  // A token in the path, as a customer's link carries one.
-  u.pathname = u.pathname
-    .split('/')
-    .map((seg) => (TOKEN_SHAPED.test(seg) && !UUID.test(seg) ? REDACTED : seg))
-    .join('/');
-  const shown = u.toString().replaceAll(encodeURIComponent(REDACTED), REDACTED);
-  return origin && u.origin === origin ? shown.slice(origin.length) || '/' : shown;
-}
-
-function redactJson(v: unknown, name = ''): unknown {
-  if (typeof v === 'string') return secretValue(name, v) ? REDACTED : v;
-  if (Array.isArray(v)) return v.map((x) => redactJson(x, name));
-  if (v && typeof v === 'object')
-    return Object.fromEntries(
-      Object.entries(v).map(([k, x]) =>
-        secretName(k) && x !== null && typeof x !== 'object' ? [k, REDACTED] : [k, redactJson(x, k)],
-      ),
-    );
-  return v;
-}
-
-/** A body with its secrets replaced: JSON by key, a form by field, anything else only if it is one token. */
-export function redactBody(body: string, contentType = ''): string {
-  const t = body.trim();
-  if (/json/.test(contentType) || /^[[{]/.test(t)) {
-    try {
-      return JSON.stringify(redactJson(JSON.parse(t)));
-    } catch {
-      // Not JSON after all: treated as text below.
-    }
-  }
-  if (/x-www-form-urlencoded/.test(contentType)) {
-    const form = new URLSearchParams(t);
-    for (const [k, v] of [...form]) if (secretValue(k, v)) form.set(k, REDACTED);
-    return form.toString().replaceAll(encodeURIComponent(REDACTED), REDACTED);
-  }
-  return TOKEN_SHAPED.test(t) && !UUID.test(t) ? REDACTED : body;
-}
 
 function bounded(s: string): string {
   return s.length > BODY_KEPT ? `${s.slice(0, BODY_KEPT)}… (${s.length} characters)` : s;

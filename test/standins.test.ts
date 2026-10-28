@@ -141,6 +141,31 @@ describe('a stand-in a product talks to as its provider', () => {
     expect(log.find((e) => e.kind === 'deliver')).toMatchObject({ status: 204 });
   });
 
+  it('logs no password, token or key the product sent, in a form, a query, XML or a body cut short', async () => {
+    const after = s.log().at(-1)?.cursor;
+    await fetch(`${s.baseUrls.api}/v1/accounts/${acct.account}/messages?token=hunter1`, {
+      method: 'POST',
+      headers: { authorization: auth(), 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'To=%2B12505550123&Body=Hi&DbPassword=hunter2',
+    });
+    await fetch(`${s.baseUrls.api}/ReportService.asmx`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/xml' },
+      body: '<Render><ParameterValue><Name>Password</Name><Value>hunter3</Value></ParameterValue></Render>',
+    });
+    // Past the 4 KB the log keeps, so the JSON it keeps is cut short.
+    await fetch(`${s.baseUrls.api}/report`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'hunter4', note: 'x'.repeat(8000) }),
+    });
+    const kept = JSON.stringify(s.log(after));
+    expect(kept).not.toMatch(/hunter/);
+    expect(kept).toContain('DbPassword=[redacted]');
+    expect(kept).toContain('token=[redacted]');
+    expect(kept).toContain('<Value>[redacted]</Value>');
+  });
+
   it('applies the general behaviours itself, in the provider’s own words', async () => {
     await s.behave({ behaviour: 'fail', count: 1 });
     const down = await sendText('+12505550123');
