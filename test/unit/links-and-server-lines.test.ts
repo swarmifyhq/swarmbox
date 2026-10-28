@@ -3,7 +3,7 @@
 // the office sends an estimate, and a second later the text fails for want of a provider.
 
 import { describe, expect, it } from 'vitest';
-import { feedLine, HarnessError, linkPath, type LinkWorld } from '../../src/harness.ts';
+import { feedLine, HarnessError, linkPath, ownPath, type LinkWorld } from '../../src/harness.ts';
 import type { FeedItem } from '../../src/hooks.ts';
 import type { Persona } from '../../src/product.ts';
 
@@ -42,6 +42,18 @@ describe('a link on a tenant’s host', () => {
     );
     expect(() => linkPath('/#/board', world(['demo-co', 'acme']))).toThrow(/say which tenant/);
     expect(() => linkPath('board', world(['demo-co']))).toThrow(/starts with \//);
+  });
+
+  it('refuses a path a browser would read as another host’s, bare or inside a full link', () => {
+    for (const path of ['//evil.example/x', '/\\evil.example/x', '/\t/evil.example', '/\n\\evil.example'])
+      expect(() => linkPath(path, world(['demo-co']))).toThrow(/would leave the tenant’s host/);
+    expect(() => linkPath(`http://demo-co.${BASE}//evil.example/x`, world(['demo-co']))).toThrow(
+      /would leave the tenant’s host/,
+    );
+    // An encoded slash is a path, not a host.
+    expect(linkPath('/%2F/evil.example', world(['demo-co'])).path).toBe('/%2F/evil.example');
+    expect(ownPath('/#//evil.example')).toBe('/#//evil.example');
+    expect(() => ownPath('//evil.example', 'company')).toThrow(/leave the company’s host/);
   });
 
   it('speaks the product’s word for a tenant, and takes a bare path only with one tenant when it can’t tell', () => {

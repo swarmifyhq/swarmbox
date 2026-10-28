@@ -316,6 +316,23 @@ export interface LinkWorld {
   tenantOfPath?(path: string): string | undefined;
 }
 
+/** Stands for a tenant's origin when checking that a path stays on it. */
+const ON_HOST = 'http://tenant.invalid';
+
+/**
+ * A path that stays on the screen's own host. A browser reads "//host/x" (and "/\host/x", and either with a tab
+ * or newline in it) as a link to another host, and page.goto follows it.
+ */
+export function ownPath(path: string, noun = 'tenant'): string {
+  if (!path.startsWith('/'))
+    throw new HarnessError(`a path on the ${noun}’s host starts with /, or give the full link`);
+  if (new URL(path, ON_HOST).origin !== ON_HOST)
+    throw new HarnessError(
+      `${JSON.stringify(path)} would leave the ${noun}’s host: a path starts with a single /`,
+    );
+  return path;
+}
+
 /**
  * A link or path on a tenant's own host, as the path to open there. A full link must be on the tenant's
  * host (`<tenant>.<baseDomain>`, with or without the world's port: products write links without it). A
@@ -338,8 +355,7 @@ export function linkPath(
     tenant = host.slice(0, -(baseDomain.length + 1));
     path = `${u.pathname}${u.search}${u.hash}`;
   }
-  if (!path.startsWith('/'))
-    throw new HarnessError(`a path on the ${noun}’s host starts with /, or give the full link`);
+  ownPath(path, noun);
   tenant ??= only ?? world.tenantOfPath?.(path) ?? (tenants.length === 1 ? tenants[0] : undefined);
   if (!tenant)
     throw new HarnessError(`say which ${noun}: give the full link (this world has ${tenants.join(', ')})`);
@@ -908,6 +924,7 @@ export function createHarness<W extends ProductWorld>(
         throw new HarnessError(
           `${product.name} has no app ${options.app}; its apps: ${['(main)', ...(product.apps ?? [])].join(', ')}`,
         );
+      if (path !== undefined) ownPath(path, noun);
       const signIn = await w.world.signIn(persona, options.app);
       return attach(w, persona, { persona, signIn }, path, options);
     },
