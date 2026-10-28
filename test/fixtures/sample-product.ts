@@ -49,6 +49,7 @@ const page = (
 <button type="button" id="where">Where am I</button>
 <button type="button" id="approve">Approve</button>
 <button type="button" id="listen">Listen</button>
+<button type="button" id="sign">Sign</button>
 <p id="device" aria-label="Device"></p></main>
 <dialog id="d" aria-labelledby="t"><h2 id="t">Send estimate E-1</h2>
   <label>To <input name="to" value="+15550100"></label>
@@ -95,6 +96,11 @@ const page = (
       body: JSON.stringify({ note: 'looks right', password: 'hunter2' }),
     });
     document.getElementById('status').textContent = r.ok ? 'Approved.' : 'Could not approve.';
+  };
+  // Signing takes the server a while (a seal), then the page swaps to its receipt in place, at the same address.
+  document.getElementById('sign').onclick = async () => {
+    const r = await fetch('/api/sign', { method: 'POST' });
+    if (r.ok) document.querySelector('main h1').textContent = 'You signed it';
   };
   document.getElementById('listen').onclick = () => {
     window.live = new EventSource('/api/live/stream?token=' + 'k'.repeat(48));
@@ -294,6 +300,10 @@ async function startSample(
       if (url.pathname === '/api/upload' && req.method === 'POST') {
         uploads.push({ tenant, name: url.searchParams.get('name') ?? '', body: raw });
         return json(200, { ok: true });
+      }
+      if (url.pathname === '/api/sign' && req.method === 'POST') {
+        setTimeout(() => json(200, { ok: true }), 1500);
+        return;
       }
       if (url.pathname === '/api/approve' && req.method === 'POST')
         return json(400, { detail: 'Only an approver can approve this.' });

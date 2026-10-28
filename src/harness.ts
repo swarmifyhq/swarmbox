@@ -46,6 +46,7 @@ import {
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
 import {
+  pendingSince,
   requestLog,
   selectRequests,
   type RequestLog,
@@ -164,11 +165,28 @@ export class HarnessError extends Error {}
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 } as const;
 /** Long enough that a click's re-render has landed, short enough not to stall the agent. */
 const SETTLE_MS = 400;
+/** The longest an action waits for the requests it started (a signature sealed, a report built). */
+const ACTION_WAIT_MS = 15_000;
 const READ_LIMIT = 12_000;
 /** After a command, how long to wait for the worker's first consequences (a text sent or refused). */
 const WORKER_MS = 1_200;
 /** How many ports past the product's first a world may take. */
 const PORT_RANGE = 50;
+
+/**
+ * After an action: wait for what it started (its requests, a page load) to finish, then a moment for the page to
+ * render, again while that moment started more; at most ACTION_WAIT_MS. What is still open then, for the readout.
+ */
+async function settleAfter(page: PwPage, log: RequestLog, since: number): Promise<RequestRecord[]> {
+  const end = Date.now() + ACTION_WAIT_MS;
+  for (;;) {
+    while (pendingSince(log.records, since).length && Date.now() < end) await page.waitForTimeout(50);
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForTimeout(SETTLE_MS);
+    const open = pendingSince(log.records, since);
+    if (!open.length || Date.now() >= end) return open;
+  }
+}
 
 /** A request the tenant's server refused, as one line: what was asked, the status and the reason. */
 async function refusal(r: PwResponse, origin: string, seq?: number): Promise<string> {
@@ -993,6 +1011,7 @@ export function createHarness<W extends ProductWorld>(
       const w = getWorld(s.worldId);
       const page = s.screen.page;
       const before = await glance(page);
+      const since = s.requests.last();
       // From here: what the server does next is what this action caused (or something late finishing).
       await feedCursor(w, s.persona.tenant);
       const origin = w.fleet.originFor(s.persona.tenant);
@@ -1003,6 +1022,7 @@ export function createHarness<W extends ProductWorld>(
       };
       page.on('response', onResponse);
       let did = '';
+      let stillOpen: RequestRecord[];
       try {
         switch (action.kind) {
           case 'click': {
@@ -1109,9 +1129,9 @@ export function createHarness<W extends ProductWorld>(
             break;
           }
         }
-        // Not networkidle: an app holding an event stream open never lets the network go idle.
-        await page.waitForLoadState('domcontentloaded');
-        await page.waitForTimeout(SETTLE_MS);
+        // Not networkidle: an app holding an event stream open never lets the network go idle. What this action
+        // started is waited for instead: the page's own requests, and any page load, then a moment to render.
+        stillOpen = await settleAfter(page, s.requests, since);
       } finally {
         page.off('response', onResponse);
       }
@@ -1137,6 +1157,16 @@ export function createHarness<W extends ProductWorld>(
             ? ['server: nothing from this screen']
             : []),
         ...(refusals.length ? [`refused: ${refusals.join('\n         ')}`] : []),
+        ...(stillOpen.length
+          ? [
+              `waiting: still open after ${ACTION_WAIT_MS / 1000} s: ${stillOpen
+                .slice(0, 3)
+                .map((r) => `#${r.seq} ${r.method} ${r.url}`)
+                .join(
+                  ', ',
+                )}${stillOpen.length > 3 ? ` and ${stillOpen.length - 3} more` : ''} (screen_requests)`,
+            ]
+          : []),
       ].join('\n');
       return `${report}\n---\n${await harness.read(screenId)}`;
     },

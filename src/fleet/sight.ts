@@ -102,10 +102,22 @@ export interface Glance {
   dialogs: string[];
   /** Visible status and alert text. */
   said: string[];
+  /** Visible top headings (h1, h2): a view that swaps in place (a "You signed it" page) shows here. */
+  headings: string[];
 }
 
+const HEADINGS = 'h1, h2, [role="heading"][aria-level="1"], [role="heading"][aria-level="2"]';
+
 export async function glance(page: Page): Promise<Glance> {
-  const [info, said] = await Promise.all([
+  const visibleText = (els: Element[]) =>
+    els
+      .filter((e) => {
+        const b = e.getBoundingClientRect();
+        return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden';
+      })
+      .map((e) => ((e as HTMLElement).innerText ?? e.textContent ?? '').replace(/\s+/g, ' ').trim())
+      .filter((t) => t.length > 0);
+  const [info, said, headings] = await Promise.all([
     page.locator(DIALOGS).evaluateAll(describeDialogs),
     page.locator(LIVE).evaluateAll((els) =>
       els
@@ -117,11 +129,13 @@ export async function glance(page: Page): Promise<Glance> {
         .map((e) => ((e as HTMLElement).innerText ?? e.textContent ?? '').replace(/\s+/g, ' ').trim())
         .filter((t) => t.length > 0),
     ),
+    page.locator(HEADINGS).evaluateAll(visibleText),
   ]);
   return {
     url: page.url(),
     dialogs: info.filter((d) => d.visible).map((d) => (d.modal ? `${d.title} (modal)` : d.title)),
     said: [...new Set(said)].map((t) => (t.length > 200 ? `${t.slice(0, 200)}…` : t)),
+    headings: [...new Set(headings)].map((t) => (t.length > 120 ? `${t.slice(0, 120)}…` : t)),
   };
 }
 
@@ -132,6 +146,13 @@ export function changes(before: Glance, after: Glance): string[] {
   for (const d of gone(after.dialogs, before.dialogs)) lines.push(`dialog opened: "${d}"`);
   for (const d of gone(before.dialogs, after.dialogs)) lines.push(`dialog closed: "${d}"`);
   for (const t of gone(after.said, before.said)) lines.push(`says: "${t}"`);
+  // A dialog's own heading is said by "dialog opened"; three at most, so a whole new page doesn't flood it.
+  const inDialog = (h: string) =>
+    after.dialogs.some((d) => d.startsWith(h)) || before.dialogs.some((d) => d.startsWith(h));
+  const came = gone(after.headings, before.headings).filter((h) => !inDialog(h));
+  const went = gone(before.headings, after.headings).filter((h) => !inDialog(h));
+  for (const h of came.slice(0, 3)) lines.push(`heading: "${h}"`);
+  for (const h of went.slice(0, 3)) lines.push(`heading gone: "${h}"`);
   if (before.url !== after.url) lines.push(`address: ${pathOf(before.url)} → ${pathOf(after.url)}`);
   return lines;
 }
