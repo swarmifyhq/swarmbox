@@ -354,6 +354,68 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect((await call('world_log', { world, match: '(a+)+$' })).error).toBe(false);
   });
 
+  it('lists a screen’s own requests: a refusal’s body, a stream still open, and no secrets', async () => {
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'north-ana' })).text,
+    )![1]!;
+    const approve = await call('screen_act', {
+      screen,
+      action: { kind: 'click', role: 'button', name: 'Approve' },
+    });
+    // FastAPI's own shape of refusal, named, with where to read the rest.
+    expect(approve.text).toMatch(
+      /refused: POST \/api\/approve → 400 Only an approver can approve this\. \(screen_requests #(\d+)\)/,
+    );
+    const seq = Number(/screen_requests #(\d+)/.exec(approve.text)![1]);
+    await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Listen' } });
+
+    const listed = (await call('screen_requests', { screen, bodies: true })).text;
+    expect(listed).toContain(`#${seq} `);
+    expect(listed).toContain('POST /api/approve → 400');
+    expect(listed).toContain('sent: {"note":"looks right","password":"[redacted]"}');
+    expect(listed).toContain('got: {"detail":"Only an approver can approve this."}');
+    expect(listed).toMatch(
+      /GET \/api\/live\/stream\?token=\[redacted\] → 200 open for [\d.]+ (ms|s) eventsource/,
+    );
+    expect(listed).not.toContain('hunter2');
+    expect(listed).not.toContain('kkkk');
+
+    const after = (await call('screen_requests', { screen, after: seq, match: '/api/' })).text;
+    expect(after).not.toContain('/api/approve');
+    expect(after).toContain('/api/live/stream');
+    expect(after).not.toContain('sent:');
+    // A page load ends the stream the page before it had open.
+    await call('screen_act', { screen, action: { kind: 'goto', path: '/' } });
+    expect((await call('screen_requests', { screen, match: '/api/live/stream' })).text).toMatch(
+      /GET \/api\/live\/stream\?token=\[redacted\] → failed: cut off by a page load/,
+    );
+    expect((await call('screen_requests', { screen, match: '/nowhere' })).text).toBe(
+      `${screen}: no requests matching "/nowhere"`,
+    );
+    await call('screen_close', { screen });
+  });
+
+  it('says what an action changed once the requests it started are done, a page swapped in place included', async () => {
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'north-ana' })).text,
+    )![1]!;
+    const t0 = Date.now();
+    const signed = await call('screen_act', {
+      screen,
+      action: { kind: 'click', role: 'button', name: 'Sign' },
+    });
+    // The server took 1.5 s: the readout waited for it, then saw the receipt replace the page's heading.
+    expect(Date.now() - t0).toBeGreaterThan(1400);
+    expect(signed.text).toContain('heading: "You signed it"');
+    expect(signed.text).toContain('heading gone: "Jobs at north"');
+    expect(signed.text).not.toContain('waiting:');
+    // A live stream is never waited for.
+    const t1 = Date.now();
+    await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Listen' } });
+    expect(Date.now() - t1).toBeLessThan(5000);
+    await call('screen_close', { screen });
+  });
+
   it('refuses a click behind an open dialog, naming the dialog', async () => {
     const screen = h.screens().find((s) => s.persona.id === 'north-ana')!.id;
     await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Send estimate' } });
@@ -475,7 +537,34 @@ describe('the pointer, and screens with layers', () => {
     expect(nowhere.text).toContain('exactly one of to');
     const off = await act({ kind: 'drag', role: 'button', name: 'Visit', by: { x: 3000, y: 0 } });
     expect(off.error).toBe(true);
-    expect(off.text).toContain('off the screen');
+    expect(off.text).toContain('beside the screen');
+  });
+
+  it('drags onto a lane far below the fold, scrolling with the wheel as it holds, and scrolls on its own', async () => {
+    const far = await act({
+      kind: 'drag',
+      role: 'button',
+      name: 'Visit',
+      to: { role: 'group', name: 'Lane C' },
+    });
+    expect(far.error, far.text).toBe(false);
+    expect(far.text).toMatch(/dragged button "Visit" onto group "Lane C", scrolling \d+ px on the way/);
+    expect(far.text).toContain('Visit in Lane C at 300');
+    const top = await act({ kind: 'scroll', to: 'top' });
+    expect(top.text).toMatch(/scrolled to the top \(\d+ px\)/);
+    const again = await act({ kind: 'scroll', to: 'top' });
+    expect(again.text).toContain('scrolled to the top (it was already there)');
+    const into = await act({ kind: 'scroll', role: 'group', name: 'Lane C' });
+    expect(into.text).toMatch(/scrolled role=group name="Lane C" into view \(\d+ px\)/);
+    // Back where the other tests expect it: Lane B, at the top.
+    const back = await act({
+      kind: 'drag',
+      role: 'button',
+      name: 'Visit',
+      to: { role: 'group', name: 'Lane B' },
+    });
+    expect(back.text).toContain('Visit in Lane B at 300');
+    expect((await act({ kind: 'scroll', role: 'group' })).text).toContain('give both its role and its name');
   });
 
   it('clicks a styled radio through the label drawn over it', async () => {

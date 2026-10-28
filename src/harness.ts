@@ -35,16 +35,26 @@ import {
   coveredByOwnLabel,
   dialogsText,
   drag,
+  scroll,
   draw,
   glance,
   openDialogs,
   pickAmong,
   whyNotClicked,
   type DragTo,
+  type ScrollTo,
   type Stroke,
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
 import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import {
+  pendingSince,
+  requestLog,
+  selectRequests,
+  type RequestLog,
+  type RequestQuery,
+  type RequestRecord,
+} from './requests.ts';
 import { isThisMachine } from './standins/guard.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
 import {
@@ -101,6 +111,8 @@ export interface ScreenEntry {
   releaseStalled(): void;
   /** Its camera and the files queued for its file choosers. */
   device: DeviceState;
+  /** What it asked its servers for, newest last (bounded, secrets redacted). */
+  requests: RequestLog;
 }
 
 /**
@@ -155,26 +167,52 @@ export class HarnessError extends Error {}
 const SCREENCAST = { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 } as const;
 /** Long enough that a click's re-render has landed, short enough not to stall the agent. */
 const SETTLE_MS = 400;
+/** The longest an action waits for the requests it started (a signature sealed, a report built). */
+const ACTION_WAIT_MS = 15_000;
 const READ_LIMIT = 12_000;
 /** After a command, how long to wait for the worker's first consequences (a text sent or refused). */
 const WORKER_MS = 1_200;
 /** How many ports past the product's first a world may take. */
 const PORT_RANGE = 50;
 
+/**
+ * After an action: wait for what it started (its requests, a page load) to finish, then a moment for the page to
+ * render, again while that moment started more; at most ACTION_WAIT_MS. What is still open then, for the readout.
+ */
+async function settleAfter(page: PwPage, log: RequestLog, since: number): Promise<RequestRecord[]> {
+  const end = Date.now() + ACTION_WAIT_MS;
+  for (;;) {
+    while (pendingSince(log.records, since).length && Date.now() < end) await page.waitForTimeout(50);
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForTimeout(SETTLE_MS);
+    const open = pendingSince(log.records, since);
+    if (!open.length || Date.now() >= end) return open;
+  }
+}
+
 /** A request the tenant's server refused, as one line: what was asked, the status and the reason. */
-async function refusal(r: PwResponse, origin: string): Promise<string> {
+async function refusal(r: PwResponse, origin: string, seq?: number): Promise<string> {
   let why = '';
   try {
     const b = (await r.json()) as {
       error?: { code?: string; message?: string };
       code?: string;
       message?: string;
+      /** FastAPI's: a string, or its validation errors. */
+      detail?: string | { msg?: string; loc?: unknown[] }[];
     };
-    why = [b.error?.code ?? b.code, b.error?.message ?? b.message].filter(Boolean).join(': ');
+    const detail =
+      typeof b.detail === 'string'
+        ? b.detail
+        : Array.isArray(b.detail)
+          ? b.detail.map((d) => [d.loc?.slice(1).join('.'), d.msg].filter(Boolean).join(': ')).join('; ')
+          : undefined;
+    why = [b.error?.code ?? b.code, b.error?.message ?? b.message ?? detail].filter(Boolean).join(': ');
   } catch {
     // Not JSON: the status says enough.
   }
-  return `${r.request().method()} ${r.url().slice(origin.length) || '/'} → ${r.status()}${why ? ` ${why.slice(0, 200)}` : ''}`;
+  const at = seq === undefined ? '' : ` (screen_requests #${seq})`;
+  return `${r.request().method()} ${r.url().slice(origin.length) || '/'} → ${r.status()}${why ? ` ${why.slice(0, 200)}` : ''}${at}`;
 }
 
 /** A port the system has free right now: for a world whose port must be known before it starts. */
@@ -228,6 +266,8 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
   openLink(worldId: string, link: string, options?: Appearance & { address?: string }): Promise<ScreenEntry>;
   /** Change what a screen's network does: airplane mode, a signal that stalls, a slow one, or back to normal. */
   setNetwork(screenId: string, mode: NetworkMode): Promise<void>;
+  /** What a screen asked its servers for, newest last. */
+  requests(screenId: string, query?: RequestQuery): RequestRecord[];
   screens(): ScreenEntry[];
   screen(screenId: string): ScreenEntry;
   read(screenId: string): Promise<string>;
@@ -291,6 +331,19 @@ export type Action =
       grab?: [number, number];
       to?: { role: string; name: string; exact?: boolean; index?: number; at?: [number, number] };
       by?: { x: number; y: number };
+    }
+  /**
+   * Scroll as a person does: an element (role and name) into view; or, with by or to, the panel that element is
+   * (or the page, without one) by a distance or to its top or bottom.
+   */
+  | {
+      kind: 'scroll';
+      role?: string;
+      name?: string;
+      exact?: boolean;
+      index?: number;
+      by?: { x: number; y: number };
+      to?: 'top' | 'bottom';
     };
 
 /**
@@ -729,6 +782,7 @@ export function createHarness<W extends ProductWorld>(
     // Their addresses too: Chrome's console line for a request cut off carries the URL, not the request.
     const cutUrls = new Set<string>();
     const stalled = new Set<Route>();
+    const requests = requestLog(w.fleet.originFor(persona.tenant));
     const signal = (kind: Signal['kind'], text: string, url?: string) => {
       signals.push({
         at: new Date().toISOString(),
@@ -768,7 +822,11 @@ export function createHarness<W extends ProductWorld>(
           signal('console-error', m.text(), m.location().url || undefined);
         });
         ctx.on('weberror', (e) => signal('page-error', String(e.error()?.stack ?? e.error())));
+        ctx.on('request', (r) => requests.onRequest(r));
+        ctx.on('requestfinished', (r) => void requests.onFinished(r));
+        ctx.on('requestfailed', (r) => requests.onFailed(r));
         ctx.on('response', (r) => {
+          requests.onResponse(r);
           if (r.status() >= 500) signal('server-error', `${r.status()} ${r.request().method()}`, r.url());
         });
         ctx.on('requestfailed', (r) => {
@@ -818,6 +876,7 @@ export function createHarness<W extends ProductWorld>(
       signals,
       network: { mode: 'online' },
       device,
+      requests,
       releaseStalled: () => {
         for (const route of stalled) {
           deliberate.add(route.request());
@@ -932,6 +991,8 @@ export function createHarness<W extends ProductWorld>(
     screens: () => [...screens.values()],
     screen: getScreen,
 
+    requests: (screenId, query) => selectRequests(getScreen(screenId).requests.records, query),
+
     async setNetwork(screenId, mode) {
       const s = getScreen(screenId);
       // The screen's one network route (attach) reads the mode on every request, so a change is just
@@ -965,15 +1026,18 @@ export function createHarness<W extends ProductWorld>(
       const w = getWorld(s.worldId);
       const page = s.screen.page;
       const before = await glance(page);
+      const since = s.requests.last();
       // From here: what the server does next is what this action caused (or something late finishing).
       await feedCursor(w, s.persona.tenant);
       const origin = w.fleet.originFor(s.persona.tenant);
       const refused: Promise<string>[] = [];
       const onResponse = (r: PwResponse) => {
-        if (r.status() >= 400 && r.url().startsWith(origin)) refused.push(refusal(r, origin));
+        if (r.status() >= 400 && r.url().startsWith(origin))
+          refused.push(refusal(r, origin, s.requests.seqOf(r.request())));
       };
       page.on('response', onResponse);
       let did = '';
+      let stillOpen: RequestRecord[];
       try {
         switch (action.kind) {
           case 'click': {
@@ -1018,10 +1082,39 @@ export function createHarness<W extends ProductWorld>(
               to = { by: action.by! };
               where = `by ${action.by!.x}, ${action.by!.y} px`;
             }
-            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${t.why ? `, ${t.why}` : ''}`;
-            await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
+            const scrolled = await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
               throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
             });
+            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${scrolled ? `, scrolling ${scrolled} px on the way` : ''}${t.why ? `, ${t.why}` : ''}`;
+            break;
+          }
+          case 'scroll': {
+            if (!action.role !== !action.name)
+              throw new HarnessError('to scroll to or over an element, give both its role and its name');
+            if (action.by && action.to) throw new HarnessError('scroll by a distance or to an end, not both');
+            const what = action.role ? `role=${action.role} name="${action.name}"` : 'the page';
+            const el = action.role
+              ? (await target(s, byRole(page, action.role, action.name!, action.exact), what, action.index))
+                  .el
+              : undefined;
+            const how: ScrollTo = action.by
+              ? { by: action.by, over: el }
+              : action.to
+                ? { end: action.to, over: el }
+                : el
+                  ? { el }
+                  : { end: 'bottom' };
+            const moved = await scroll(page, how).catch((e: unknown) => {
+              throw new HarnessError(`could not scroll ${what}: ${(e as Error).message}`);
+            });
+            const whither = action.by
+              ? `by ${action.by.x}, ${action.by.y} px`
+              : action.to
+                ? `to the ${action.to}`
+                : el
+                  ? 'into view'
+                  : 'to the bottom';
+            did = `scrolled ${action.role && (action.by || action.to) ? `${what} ` : action.role ? `${what} ` : ''}${whither}${moved ? ` (${moved} px)` : ' (it was already there)'}`;
             break;
           }
           case 'fill': {
@@ -1080,9 +1173,9 @@ export function createHarness<W extends ProductWorld>(
             break;
           }
         }
-        // Not networkidle: an app holding an event stream open never lets the network go idle.
-        await page.waitForLoadState('domcontentloaded');
-        await page.waitForTimeout(SETTLE_MS);
+        // Not networkidle: an app holding an event stream open never lets the network go idle. What this action
+        // started is waited for instead: the page's own requests, and any page load, then a moment to render.
+        stillOpen = await settleAfter(page, s.requests, since);
       } finally {
         page.off('response', onResponse);
       }
@@ -1108,6 +1201,16 @@ export function createHarness<W extends ProductWorld>(
             ? ['server: nothing from this screen']
             : []),
         ...(refusals.length ? [`refused: ${refusals.join('\n         ')}`] : []),
+        ...(stillOpen.length
+          ? [
+              `waiting: still open after ${ACTION_WAIT_MS / 1000} s: ${stillOpen
+                .slice(0, 3)
+                .map((r) => `#${r.seq} ${r.method} ${r.url}`)
+                .join(
+                  ', ',
+                )}${stillOpen.length > 3 ? ` and ${stillOpen.length - 3} more` : ''} (screen_requests)`,
+            ]
+          : []),
       ].join('\n');
       return `${report}\n---\n${await harness.read(screenId)}`;
     },

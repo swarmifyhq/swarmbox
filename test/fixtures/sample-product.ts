@@ -47,6 +47,9 @@ const page = (
 <input type="file" id="photo" accept="image/*" capture="environment" hidden>
 <button type="button" id="cam">Use the camera</button>
 <button type="button" id="where">Where am I</button>
+<button type="button" id="approve">Approve</button>
+<button type="button" id="listen">Listen</button>
+<button type="button" id="sign">Sign</button>
 <p id="device" aria-label="Device"></p></main>
 <dialog id="d" aria-labelledby="t"><h2 id="t">Send estimate E-1</h2>
   <label>To <input name="to" value="+15550100"></label>
@@ -85,6 +88,23 @@ const page = (
       (p) => (device.textContent = 'At ' + p.coords.latitude.toFixed(3) + ',' + p.coords.longitude.toFixed(3)),
       (e) => (device.textContent = 'No location: ' + e.message),
     );
+  // A server that answers as FastAPI does, and a live stream left open.
+  document.getElementById('approve').onclick = async () => {
+    const r = await fetch('/api/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: 'looks right', password: 'hunter2' }),
+    });
+    document.getElementById('status').textContent = r.ok ? 'Approved.' : 'Could not approve.';
+  };
+  // Signing takes the server a while (a seal), then the page swaps to its receipt in place, at the same address.
+  document.getElementById('sign').onclick = async () => {
+    const r = await fetch('/api/sign', { method: 'POST' });
+    if (r.ok) document.querySelector('main h1').textContent = 'You signed it';
+  };
+  document.getElementById('listen').onclick = () => {
+    window.live = new EventSource('/api/live/stream?token=' + 'k'.repeat(48));
+  };
   document.getElementById('send').onclick = async () => {
     const r = await fetch('/api/send', { method: 'POST', body: d.querySelector('input').value });
     d.close();
@@ -114,7 +134,9 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
   <label class="choice"><input type="radio" name="who" value="Ben"><span>Ben</span></label>
 </fieldset>
 <button type="button" id="open-layer">Open the layer</button>
-<p role="status" id="said"></p></main>
+<p role="status" id="said"></p>
+<div style="height: 1500px"></div>
+<div class="lane" role="group" aria-label="Lane C"></div></main>
 <section id="panel" role="dialog" aria-label="The panel"><button type="button" id="p-change">Change</button></section>
 <div id="scrim" hidden></div>
 <section id="layer" role="dialog" aria-label="Change it" hidden><button type="button" id="l-change">Change</button></section>
@@ -281,6 +303,17 @@ async function startSample(
         uploads.push({ tenant, name: url.searchParams.get('name') ?? '', body: raw });
         return json(200, { ok: true });
       }
+      if (url.pathname === '/api/sign' && req.method === 'POST') {
+        setTimeout(() => json(200, { ok: true }), 1500);
+        return;
+      }
+      if (url.pathname === '/api/approve' && req.method === 'POST')
+        return json(400, { detail: 'Only an approver can approve this.' });
+      if (url.pathname === '/api/live/stream') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        res.write(': ping\n\n');
+        return;
+      }
       if (url.pathname === '/hooks/postbox' && req.method === 'POST') {
         receipts.push(`${tenant} ${body}`);
         return res.writeHead(204).end();
@@ -391,7 +424,10 @@ async function startSample(
     log: ({ lines, match }) =>
       requests.filter((l) => !match || l.toLowerCase().includes(match.toLowerCase())).slice(-lines),
     stop: async () => {
-      await new Promise<void>((r) => server.close(() => r()));
+      const closed = new Promise<void>((r) => server.close(() => r()));
+      // A live stream a screen left open would hold the close.
+      server.closeAllConnections();
+      await closed;
       if (failStop) throw new Error('the sample shop would not stop cleanly');
     },
   };

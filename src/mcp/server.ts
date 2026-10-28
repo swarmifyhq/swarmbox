@@ -17,6 +17,7 @@ import { DEVICES, type Device } from '../fleet/browser.ts';
 import { registerDeviceTools } from './device.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
+import { REQUESTS_KEPT, requestLine } from '../requests.ts';
 import { HarnessError, type Action, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
@@ -465,11 +466,12 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         'Do one thing on a screen: click {role, name}, fill {label, text}, select {label, option}, press {key}, ' +
         'draw {label} (pointer strokes, e.g. a signature pad; strokes default to a signature), drag {role, name} ' +
         'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
-        'of its box: an edge to resize; default its middle), or goto {path} (a ' +
+        'of its box: an edge to resize; default its middle; a drop off the screen is scrolled to on the way), ' +
+        'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or goto {path} (a ' +
         `path, or a full link on the ${noun}’s host as a text gives it). Elements are found by accessible role and ` +
         'name, as in screen_read; of several, the one in the open dialog is taken, else each is described for index. ' +
-        'Something behind a modal dialog is refused with the dialog’s name. Returns what it did, what changed ' +
-        '(dialogs, status lines, the address), what the server did (yours, with what it set off, and any failure ' +
+        'Something behind a modal dialog is refused with the dialog’s name. Waits for the requests it started (up ' +
+        'to 15 s). Returns what it did, what changed (dialogs, status lines, headings, the address), what the server did (yours, with what it set off, and any failure ' +
         `in the ${noun} since the last action), requests refused, then the screen as it is. Refused while a ` +
         'person has the screen.',
       inputSchema: {
@@ -525,6 +527,23 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               .object({ x: z.number().min(-4000).max(4000), y: z.number().min(-4000).max(4000) })
               .optional()
               .describe('Or move it this far, in CSS pixels (screen_image is in them)'),
+          }),
+          z.object({
+            kind: z.literal('scroll'),
+            role: z.string().optional(),
+            name: z.string().optional(),
+            exact: z.boolean().optional(),
+            index: z.int().optional(),
+            by: z
+              .object({ x: z.number().min(-20000).max(20000), y: z.number().min(-20000).max(20000) })
+              .optional()
+              .describe(
+                'Turn the wheel this far, in CSS pixels, over the element given (a panel) or the page',
+              ),
+            to: z
+              .enum(['top', 'bottom'])
+              .optional()
+              .describe('Or to its top or bottom. With neither, the element given is brought into view'),
           }),
           z.object({ kind: z.literal('press'), key: z.string() }),
           z.object({ kind: z.literal('goto'), path: z.string() }),
@@ -584,6 +603,37 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               : { mode },
         );
         return text(`${screen}: network ${mode}${match ? ` for ${match}` : ''}`);
+      }),
+  );
+
+  server.registerTool(
+    'screen_requests',
+    {
+      title: 'Read a screen’s requests',
+      description:
+        'What a screen asked its servers for, newest last: method, address, status and time, and with bodies the ' +
+        'start of what was sent and what came back. A request still open (a live stream, a long poll) says so. ' +
+        'The readout’s "refused:" lines give each one’s #number. Pages’ scripts, styles, images and fonts are left ' +
+        'out unless all is set. Headers are never kept, and secrets in addresses and bodies are redacted.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        screen: z.string(),
+        match: z.string().min(1).optional().describe('Only addresses containing this, e.g. "/api/live"'),
+        after: z.int().min(0).optional().describe('Only requests after this #number'),
+        bodies: z.boolean().optional().describe('Show what was sent and what came back; default no'),
+        all: z.boolean().optional().describe('Include the page’s own scripts, styles, images and fonts'),
+        limit: z.int().min(1).max(REQUESTS_KEPT).optional().describe('The most recent this many; default 40'),
+      },
+    },
+    async ({ screen, bodies, ...q }) =>
+      guard(async () => {
+        const got = h.requests(screen, q);
+        const now = Date.now();
+        return text(
+          got.length
+            ? got.map((r) => requestLine(r, now, bodies ?? false)).join('\n')
+            : `${screen}: no requests${q.match ? ` matching "${q.match}"` : ''}${q.after !== undefined ? ` after #${q.after}` : ''}`,
+        );
       }),
   );
 
