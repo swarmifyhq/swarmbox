@@ -35,12 +35,14 @@ import {
   coveredByOwnLabel,
   dialogsText,
   drag,
+  scroll,
   draw,
   glance,
   openDialogs,
   pickAmong,
   whyNotClicked,
   type DragTo,
+  type ScrollTo,
   type Stroke,
 } from './fleet/sight.ts';
 import type { ClockMove, ClockState, FeedItem, Hooks } from './hooks.ts';
@@ -329,6 +331,19 @@ export type Action =
       grab?: [number, number];
       to?: { role: string; name: string; exact?: boolean; index?: number; at?: [number, number] };
       by?: { x: number; y: number };
+    }
+  /**
+   * Scroll as a person does: an element (role and name) into view; or, with by or to, the panel that element is
+   * (or the page, without one) by a distance or to its top or bottom.
+   */
+  | {
+      kind: 'scroll';
+      role?: string;
+      name?: string;
+      exact?: boolean;
+      index?: number;
+      by?: { x: number; y: number };
+      to?: 'top' | 'bottom';
     };
 
 /**
@@ -1067,10 +1082,39 @@ export function createHarness<W extends ProductWorld>(
               to = { by: action.by! };
               where = `by ${action.by!.x}, ${action.by!.y} px`;
             }
-            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${t.why ? `, ${t.why}` : ''}`;
-            await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
+            const scrolled = await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
               throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
             });
+            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${scrolled ? `, scrolling ${scrolled} px on the way` : ''}${t.why ? `, ${t.why}` : ''}`;
+            break;
+          }
+          case 'scroll': {
+            if (!action.role !== !action.name)
+              throw new HarnessError('to scroll to or over an element, give both its role and its name');
+            if (action.by && action.to) throw new HarnessError('scroll by a distance or to an end, not both');
+            const what = action.role ? `role=${action.role} name="${action.name}"` : 'the page';
+            const el = action.role
+              ? (await target(s, byRole(page, action.role, action.name!, action.exact), what, action.index))
+                  .el
+              : undefined;
+            const how: ScrollTo = action.by
+              ? { by: action.by, over: el }
+              : action.to
+                ? { end: action.to, over: el }
+                : el
+                  ? { el }
+                  : { end: 'bottom' };
+            const moved = await scroll(page, how).catch((e: unknown) => {
+              throw new HarnessError(`could not scroll ${what}: ${(e as Error).message}`);
+            });
+            const whither = action.by
+              ? `by ${action.by.x}, ${action.by.y} px`
+              : action.to
+                ? `to the ${action.to}`
+                : el
+                  ? 'into view'
+                  : 'to the bottom';
+            did = `scrolled ${action.role && (action.by || action.to) ? `${what} ` : action.role ? `${what} ` : ''}${whither}${moved ? ` (${moved} px)` : ' (it was already there)'}`;
             break;
           }
           case 'fill': {

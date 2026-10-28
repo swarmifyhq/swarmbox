@@ -320,32 +320,135 @@ export async function draw(page: Page, el: Locator, strokes: Stroke[] = SIGNATUR
 /** Where a drag goes: a point on another element (fractions of its box), or a distance in CSS pixels. */
 export type DragTo = { el: Locator; at: [number, number] } | { by: { x: number; y: number } };
 
+/** How far one wheel turn scrolls while a drag is held, as a fraction of the screen's height. */
+const WHEEL_STEP = 0.6;
+/** How close to an edge of the screen a drop point may be, in CSS pixels. */
+const EDGE = 8;
+
 /**
  * Drags with the pointer, as a person would: press at a point on the element (fractions of its box), move
  * a little first (a drag library starts a drag only once the pointer has moved), then on to the drop in small
- * steps, pause over it (a drop target answers hovering), and let go. Both ends must be on screen.
+ * steps, pause over it (a drop target answers hovering), and let go.
+ *
+ * A drop below or above the screen is reached as a person reaches it: when both ends fit on the screen at once,
+ * the page is scrolled to show them both first; otherwise the wheel is turned while the drag is held, and the
+ * pointer follows the drop point as it comes into view. Returns how far it scrolled, in CSS pixels (0: not at all).
  */
-export async function drag(page: Page, el: Locator, grab: [number, number], to: DragTo): Promise<void> {
+export async function drag(page: Page, el: Locator, grab: [number, number], to: DragTo): Promise<number> {
   await el.scrollIntoViewIfNeeded({ timeout: 10_000 });
-  const box = await el.boundingBox({ timeout: 10_000 });
-  if (!box) throw new Error('it has no size on screen');
-  const from = { x: box.x + grab[0] * box.width, y: box.y + grab[1] * box.height };
-  let dest: { x: number; y: number };
-  if ('by' in to) dest = { x: from.x + to.by.x, y: from.y + to.by.y };
-  else {
+  const view = page.viewportSize() ?? { width: 1280, height: 800 };
+  const scrollY = () => page.evaluate(() => window.scrollY);
+  const grabPoint = async () => {
+    const box = await el.boundingBox({ timeout: 10_000 });
+    if (!box) throw new Error('it has no size on screen');
+    return { x: box.x + grab[0] * box.width, y: box.y + grab[1] * box.height };
+  };
+  // A distance is from where it was held, in the page: it moves with the page as the page scrolls.
+  let from = await grabPoint();
+  const startY = await scrollY();
+  const destPoint = async (): Promise<{ x: number; y: number }> => {
+    if ('by' in to) return { x: from.x + to.by.x, y: from.y + to.by.y - ((await scrollY()) - startY) };
     const b = await to.el.boundingBox({ timeout: 10_000 });
     if (!b) throw new Error('where it goes has no size on screen');
-    dest = { x: b.x + to.at[0] * b.width, y: b.y + to.at[1] * b.height };
-  }
-  const view = page.viewportSize();
-  if (view && (dest.x < 0 || dest.y < 0 || dest.x > view.width || dest.y > view.height))
+    return { x: b.x + to.at[0] * b.width, y: b.y + to.at[1] * b.height };
+  };
+  const onScreen = (p: { x: number; y: number }) =>
+    p.x >= 0 && p.x <= view.width && p.y >= EDGE && p.y <= view.height - EDGE;
+  let dest = await destPoint();
+  if (dest.x < 0 || dest.x > view.width)
     throw new Error(
-      `the drop point (${Math.round(dest.x)}, ${Math.round(dest.y)}) is off the screen (${view.width}×${view.height}); scroll or drag in steps`,
+      `the drop point (${Math.round(dest.x)}, ${Math.round(dest.y)}) is beside the screen (${view.width}×${view.height})`,
     );
+  let scrolled = 0;
+  // Both ends fit: scroll them both into view before taking hold, by the wheel over what is held.
+  if (!onScreen(dest) && Math.abs(dest.y - from.y) < view.height - 4 * EDGE) {
+    const by = (from.y + dest.y) / 2 - view.height / 2;
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.wheel(0, by);
+    await page.waitForTimeout(150);
+    scrolled += by;
+    from = await grabPoint();
+    dest = await destPoint();
+  }
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
   await page.mouse.move(from.x + 6, from.y, { steps: 3 });
+  // Too far apart to see both: hold it near the edge it goes towards and turn the wheel until the drop shows.
+  for (let turns = 0; !onScreen(dest) && turns < 20; turns++) {
+    const down = dest.y > view.height;
+    const edge = {
+      x: Math.min(Math.max(dest.x, EDGE), view.width - EDGE),
+      y: down ? view.height - 3 * EDGE : 3 * EDGE,
+    };
+    await page.mouse.move(edge.x, edge.y, { steps: 8 });
+    const step = Math.min(Math.abs(dest.y - edge.y), view.height * WHEEL_STEP) * (down ? 1 : -1);
+    await page.mouse.wheel(0, step);
+    await page.waitForTimeout(120);
+    const next = await destPoint();
+    if (Math.abs(next.y - dest.y) < 1) {
+      await page.mouse.up();
+      throw new Error('the page would not scroll any further towards the drop point; drag in steps');
+    }
+    scrolled += dest.y - next.y;
+    dest = next;
+  }
+  if (!onScreen(dest)) {
+    await page.mouse.up();
+    throw new Error(
+      `the drop point is still off the screen after scrolling ${Math.round(Math.abs(scrolled))} px`,
+    );
+  }
   await page.mouse.move(dest.x, dest.y, { steps: 24 });
   await page.waitForTimeout(150);
   await page.mouse.up();
+  return Math.round(Math.abs(scrolled));
+}
+
+/** Where a scroll goes: to an element, by a distance, or to one end. */
+export type ScrollTo =
+  | { el: Locator }
+  | { by: { x: number; y: number }; over?: Locator }
+  | { end: 'top' | 'bottom'; over?: Locator };
+
+/**
+ * Scrolls as a person does: an element into view; or the wheel turned over a panel (or the page), by a distance
+ * or to one end. Returns how far the page or the panel moved, in CSS pixels.
+ */
+export async function scroll(page: Page, to: ScrollTo): Promise<number> {
+  if ('el' in to) {
+    const before = await to.el.boundingBox({ timeout: 10_000 });
+    await to.el.scrollIntoViewIfNeeded({ timeout: 10_000 });
+    const after = await to.el.boundingBox({ timeout: 10_000 });
+    return before && after ? Math.round(Math.abs(before.y - after.y)) : 0;
+  }
+  const view = page.viewportSize() ?? { width: 1280, height: 800 };
+  const box = to.over ? await to.over.boundingBox({ timeout: 10_000 }) : null;
+  if (to.over && !box) throw new Error('what to scroll has no size on screen');
+  const at = box
+    ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+    : { x: view.width / 2, y: view.height / 2 };
+  // How far down the page or the panel under the pointer is: what the wheel moves.
+  const position = () =>
+    page.evaluate(({ x, y }) => {
+      for (let e = document.elementFromPoint(x, y); e; e = e.parentElement)
+        if (e.scrollHeight > e.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(e).overflowY))
+          return e.scrollTop;
+      return window.scrollY;
+    }, at);
+  await page.mouse.move(at.x, at.y);
+  const start = await position();
+  if ('by' in to) {
+    await page.mouse.wheel(to.by.x, to.by.y);
+    await page.waitForTimeout(150);
+  } else {
+    // To an end: turn the wheel until it stops moving.
+    for (let turns = 0, last = start; turns < 50; turns++) {
+      await page.mouse.wheel(0, (to.end === 'bottom' ? 1 : -1) * view.height * 2);
+      await page.waitForTimeout(80);
+      const now = await position();
+      if (now === last) break;
+      last = now;
+    }
+  }
+  return Math.round(Math.abs((await position()) - start));
 }

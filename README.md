@@ -24,8 +24,9 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
 - **The device and props.** Swarmbox makes the photos, documents and signatures a person would use, each tagged
   with its id. It puts them in a screen's file chooser (a tablet's camera button) or in front of its live camera,
   and sets where the device is and whether it shows notifications.
-- **Hands on the screen.** Click, type, choose, press keys, draw (a signature pad) and drag with the pointer
-  (a block onto another lane, an edge to resize), each element found by its accessible role and name. A styled
+- **Hands on the screen.** Click, type, choose, press keys, scroll, draw (a signature pad) and drag with the pointer
+  (a block onto another lane, an edge to resize, a box onto a page below the fold, scrolling on the way), each
+  element found by its accessible role and name. A styled
   radio or checkbox is clicked through the label drawn over it, and of two alike in stacked layers, the one in
   front is taken.
 - **Time.** Move a world's clock forward, and every screen follows; people stay signed in across the jump

@@ -134,7 +134,9 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
   <label class="choice"><input type="radio" name="who" value="Ben"><span>Ben</span></label>
 </fieldset>
 <button type="button" id="open-layer">Open the layer</button>
-<p role="status" id="said"></p></main>
+<p role="status" id="said"></p>
+<div style="height: 1500px"></div>
+<div class="lane" role="group" aria-label="Lane C"></div></main>
 <section id="panel" role="dialog" aria-label="The panel"><button type="button" id="p-change">Change</button></section>
 <div id="scrim" hidden></div>
 <section id="layer" role="dialog" aria-label="Change it" hidden><button type="button" id="l-change">Change</button></section>
