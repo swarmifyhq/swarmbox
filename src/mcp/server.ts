@@ -17,6 +17,7 @@ import { DEVICES, type Device } from '../fleet/browser.ts';
 import { registerDeviceTools } from './device.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
+import { REQUESTS_KEPT, requestLine } from '../requests.ts';
 import { HarnessError, type Action, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
@@ -584,6 +585,37 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               : { mode },
         );
         return text(`${screen}: network ${mode}${match ? ` for ${match}` : ''}`);
+      }),
+  );
+
+  server.registerTool(
+    'screen_requests',
+    {
+      title: 'Read a screen’s requests',
+      description:
+        'What a screen asked its servers for, newest last: method, address, status and time, and with bodies the ' +
+        'start of what was sent and what came back. A request still open (a live stream, a long poll) says so. ' +
+        'The readout’s "refused:" lines give each one’s #number. Pages’ scripts, styles, images and fonts are left ' +
+        'out unless all is set. Headers are never kept, and secrets in addresses and bodies are redacted.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        screen: z.string(),
+        match: z.string().min(1).optional().describe('Only addresses containing this, e.g. "/api/live"'),
+        after: z.int().min(0).optional().describe('Only requests after this #number'),
+        bodies: z.boolean().optional().describe('Show what was sent and what came back; default no'),
+        all: z.boolean().optional().describe('Include the page’s own scripts, styles, images and fonts'),
+        limit: z.int().min(1).max(REQUESTS_KEPT).optional().describe('The most recent this many; default 40'),
+      },
+    },
+    async ({ screen, bodies, ...q }) =>
+      guard(async () => {
+        const got = h.requests(screen, q);
+        const now = Date.now();
+        return text(
+          got.length
+            ? got.map((r) => requestLine(r, now, bodies ?? false)).join('\n')
+            : `${screen}: no requests${q.match ? ` matching "${q.match}"` : ''}${q.after !== undefined ? ` after #${q.after}` : ''}`,
+        );
       }),
   );
 

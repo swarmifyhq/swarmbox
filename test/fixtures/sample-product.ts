@@ -47,6 +47,8 @@ const page = (
 <input type="file" id="photo" accept="image/*" capture="environment" hidden>
 <button type="button" id="cam">Use the camera</button>
 <button type="button" id="where">Where am I</button>
+<button type="button" id="approve">Approve</button>
+<button type="button" id="listen">Listen</button>
 <p id="device" aria-label="Device"></p></main>
 <dialog id="d" aria-labelledby="t"><h2 id="t">Send estimate E-1</h2>
   <label>To <input name="to" value="+15550100"></label>
@@ -85,6 +87,18 @@ const page = (
       (p) => (device.textContent = 'At ' + p.coords.latitude.toFixed(3) + ',' + p.coords.longitude.toFixed(3)),
       (e) => (device.textContent = 'No location: ' + e.message),
     );
+  // A server that answers as FastAPI does, and a live stream left open.
+  document.getElementById('approve').onclick = async () => {
+    const r = await fetch('/api/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: 'looks right', password: 'hunter2' }),
+    });
+    document.getElementById('status').textContent = r.ok ? 'Approved.' : 'Could not approve.';
+  };
+  document.getElementById('listen').onclick = () => {
+    window.live = new EventSource('/api/live/stream?token=' + 'k'.repeat(48));
+  };
   document.getElementById('send').onclick = async () => {
     const r = await fetch('/api/send', { method: 'POST', body: d.querySelector('input').value });
     d.close();
@@ -281,6 +295,13 @@ async function startSample(
         uploads.push({ tenant, name: url.searchParams.get('name') ?? '', body: raw });
         return json(200, { ok: true });
       }
+      if (url.pathname === '/api/approve' && req.method === 'POST')
+        return json(400, { detail: 'Only an approver can approve this.' });
+      if (url.pathname === '/api/live/stream') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        res.write(': ping\n\n');
+        return;
+      }
       if (url.pathname === '/hooks/postbox' && req.method === 'POST') {
         receipts.push(`${tenant} ${body}`);
         return res.writeHead(204).end();
@@ -391,7 +412,10 @@ async function startSample(
     log: ({ lines, match }) =>
       requests.filter((l) => !match || l.toLowerCase().includes(match.toLowerCase())).slice(-lines),
     stop: async () => {
-      await new Promise<void>((r) => server.close(() => r()));
+      const closed = new Promise<void>((r) => server.close(() => r()));
+      // A live stream a screen left open would hold the close.
+      server.closeAllConnections();
+      await closed;
       if (failStop) throw new Error('the sample shop would not stop cleanly');
     },
   };

@@ -40,6 +40,10 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
   actions on that screen are refused.
 - **The world's own log** (`world_log`), when the product shares it: the stack behind a screen's
   "something went wrong", while the world runs.
+- **A screen's own requests** (`screen_requests`): what it asked its servers for, with status, timing, and the
+  start of what was sent and what came back, and what it keeps open (a live stream). An action's "refused:" line
+  gives each refusal's number, with the server's reason (`error.message`, or FastAPI's `detail`). No headers are
+  kept, and secrets in addresses and bodies are redacted.
 - **A daily budget** in browser-minutes and runs.
 
 ## Install
