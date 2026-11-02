@@ -4,7 +4,9 @@
 //
 // They answer on the product's bare host only, never a tenant's (where testers' browsers are signed in), so
 // requests go to a loopback base such as http://127.0.0.1:<port>/_sandbox. A product build without them
-// answers 404 on /health; every call then says so instead of failing obscurely.
+// answers 404 on /health; every call then says so instead of failing obscurely. A product may serve only some
+// of them (the clock, say, and no feed): a hook it doesn't serve answers a plain 404, not the protocol's
+// {ok: false}, and is reported as missing, so the harness goes on without it.
 //
 //   GET  /health                       200 when the hooks are there
 //   GET  /clock, POST /clock           sandbox time; move it: {jumpMs} | {to} | {pause} | {play}
@@ -90,6 +92,8 @@ export function hooksFor(base: string, token: string, fetchImpl: typeof fetch = 
     } catch {
       // Not JSON: reported below with the status.
     }
+    if (res.status === 404 && json.ok !== false)
+      throw new HooksMissing(`this product serves no ${prefix}${path.split('?')[0]} hook`);
     if (!res.ok || json.ok === false)
       throw new HooksRefused(
         `${method} ${prefix}${path}: ${res.status}${json.error ? ` ${json.error.code ?? ''}: ${json.error.message ?? ''}` : ` ${text.slice(0, 200)}`}`,
