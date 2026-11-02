@@ -540,7 +540,7 @@ describe('the pointer, and screens with layers', () => {
     expect(off.text).toContain('beside the screen');
   });
 
-  it('drags onto a lane far below the fold, scrolling with the wheel as it holds, and scrolls on its own', async () => {
+  it('drags onto a lane far below the fold, scrolling with the wheel as it holds, by a distance that scrolls first, and scrolls on its own', async () => {
     const far = await act({
       kind: 'drag',
       role: 'button',
@@ -550,6 +550,12 @@ describe('the pointer, and screens with layers', () => {
     expect(far.error, far.text).toBe(false);
     expect(far.text).toMatch(/dragged button "Visit" onto group "Lane C", scrolling \d+ px on the way/);
     expect(far.text).toContain('Visit in Lane C at 300');
+    // Lane D is 480 px further down, below the fold but near enough to see both: the page scrolls first, and the
+    // distance is still from where it was held.
+    const near = await act({ kind: 'drag', role: 'button', name: 'Visit', by: { x: 0, y: 480 } });
+    expect(near.error, near.text).toBe(false);
+    expect(near.text).toMatch(/dragged button "Visit" by 0, 480 px, scrolling [1-9]\d* px on the way/);
+    expect(near.text).toContain('Visit in Lane D at 300');
     const top = await act({ kind: 'scroll', to: 'top' });
     expect(top.text).toMatch(/scrolled to the top \(\d+ px\)/);
     const again = await act({ kind: 'scroll', to: 'top' });

@@ -543,7 +543,9 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             to: z
               .enum(['top', 'bottom'])
               .optional()
-              .describe('Or to its top or bottom. With neither, the element given is brought into view'),
+              .describe(
+                'Or to its top or bottom. With neither, the element given is brought into view; with no element either, the page goes to its bottom',
+              ),
           }),
           z.object({ kind: z.literal('press'), key: z.string() }),
           z.object({ kind: z.literal('goto'), path: z.string() }),

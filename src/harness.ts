@@ -334,7 +334,7 @@ export type Action =
     }
   /**
    * Scroll as a person does: an element (role and name) into view; or, with by or to, the panel that element is
-   * (or the page, without one) by a distance or to its top or bottom.
+   * (or the page, without one) by a distance or to its top or bottom. With nothing at all, the page to its bottom.
    */
   | {
       kind: 'scroll';

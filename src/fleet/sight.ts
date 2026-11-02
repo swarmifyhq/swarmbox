@@ -343,11 +343,12 @@ export async function drag(page: Page, el: Locator, grab: [number, number], to: 
     if (!box) throw new Error('it has no size on screen');
     return { x: box.x + grab[0] * box.width, y: box.y + grab[1] * box.height };
   };
-  // A distance is from where it was held, in the page: it moves with the page as the page scrolls.
-  let from = await grabPoint();
+  // A distance is from where it was first held, in the page: it moves with the page as the page scrolls.
+  const held = await grabPoint();
+  let from = held;
   const startY = await scrollY();
   const destPoint = async (): Promise<{ x: number; y: number }> => {
-    if ('by' in to) return { x: from.x + to.by.x, y: from.y + to.by.y - ((await scrollY()) - startY) };
+    if ('by' in to) return { x: held.x + to.by.x, y: held.y + to.by.y - ((await scrollY()) - startY) };
     const b = await to.el.boundingBox({ timeout: 10_000 });
     if (!b) throw new Error('where it goes has no size on screen');
     return { x: b.x + to.at[0] * b.width, y: b.y + to.at[1] * b.height };
@@ -366,40 +367,44 @@ export async function drag(page: Page, el: Locator, grab: [number, number], to: 
     await page.mouse.move(from.x, from.y);
     await page.mouse.wheel(0, by);
     await page.waitForTimeout(150);
-    scrolled += by;
-    from = await grabPoint();
+    const moved = await grabPoint();
+    // What the page moved, not what was asked: it stops at its own end.
+    scrolled += from.y - moved.y;
+    from = moved;
     dest = await destPoint();
   }
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await page.mouse.move(from.x + 6, from.y, { steps: 3 });
-  // Too far apart to see both: hold it near the edge it goes towards and turn the wheel until the drop shows.
-  for (let turns = 0; !onScreen(dest) && turns < 20; turns++) {
-    const down = dest.y > view.height;
-    const edge = {
-      x: Math.min(Math.max(dest.x, EDGE), view.width - EDGE),
-      y: down ? view.height - 3 * EDGE : 3 * EDGE,
-    };
-    await page.mouse.move(edge.x, edge.y, { steps: 8 });
-    const step = Math.min(Math.abs(dest.y - edge.y), view.height * WHEEL_STEP) * (down ? 1 : -1);
-    await page.mouse.wheel(0, step);
-    await page.waitForTimeout(120);
-    const next = await destPoint();
-    if (Math.abs(next.y - dest.y) < 1) {
-      await page.mouse.up();
-      throw new Error('the page would not scroll any further towards the drop point; drag in steps');
+  try {
+    await page.mouse.move(from.x + 6, from.y, { steps: 3 });
+    // Too far apart to see both: hold it near the edge it goes towards and turn the wheel until the drop shows.
+    for (let turns = 0; !onScreen(dest) && turns < 20; turns++) {
+      const down = dest.y > view.height;
+      const edge = {
+        x: Math.min(Math.max(dest.x, EDGE), view.width - EDGE),
+        y: down ? view.height - 3 * EDGE : 3 * EDGE,
+      };
+      await page.mouse.move(edge.x, edge.y, { steps: 8 });
+      const step = Math.min(Math.abs(dest.y - edge.y), view.height * WHEEL_STEP) * (down ? 1 : -1);
+      await page.mouse.wheel(0, step);
+      await page.waitForTimeout(120);
+      const next = await destPoint();
+      if (Math.abs(next.y - dest.y) < 1)
+        throw new Error('the page would not scroll any further towards the drop point; drag in steps');
+      scrolled += dest.y - next.y;
+      dest = next;
     }
-    scrolled += dest.y - next.y;
-    dest = next;
+    if (!onScreen(dest))
+      throw new Error(
+        `the drop point is still off the screen after scrolling ${Math.round(Math.abs(scrolled))} px`,
+      );
+    await page.mouse.move(dest.x, dest.y, { steps: 24 });
+    await page.waitForTimeout(150);
+  } catch (e) {
+    // Never left holding the button: the next action would drag.
+    await page.mouse.up().catch(() => undefined);
+    throw e;
   }
-  if (!onScreen(dest)) {
-    await page.mouse.up();
-    throw new Error(
-      `the drop point is still off the screen after scrolling ${Math.round(Math.abs(scrolled))} px`,
-    );
-  }
-  await page.mouse.move(dest.x, dest.y, { steps: 24 });
-  await page.waitForTimeout(150);
   await page.mouse.up();
   return Math.round(Math.abs(scrolled));
 }
@@ -427,13 +432,25 @@ export async function scroll(page: Page, to: ScrollTo): Promise<number> {
   const at = box
     ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
     : { x: view.width / 2, y: view.height / 2 };
-  // How far down the page or the panel under the pointer is: what the wheel moves.
+  // How far along and down the page or the panel under the pointer is, each way: what the wheel moves.
   const position = () =>
     page.evaluate(({ x, y }) => {
-      for (let e = document.elementFromPoint(x, y); e; e = e.parentElement)
-        if (e.scrollHeight > e.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(e).overflowY))
-          return e.scrollTop;
-      return window.scrollY;
+      const scroller = (down: boolean) => {
+        for (let e = document.elementFromPoint(x, y); e; e = e.parentElement) {
+          const style = getComputedStyle(e);
+          if (
+            down
+              ? e.scrollHeight > e.clientHeight + 1 && /(auto|scroll)/.test(style.overflowY)
+              : e.scrollWidth > e.clientWidth + 1 && /(auto|scroll)/.test(style.overflowX)
+          )
+            return e;
+        }
+        return null;
+      };
+      return {
+        x: scroller(false)?.scrollLeft ?? window.scrollX,
+        y: scroller(true)?.scrollTop ?? window.scrollY,
+      };
     }, at);
   await page.mouse.move(at.x, at.y);
   const start = await position();
@@ -442,13 +459,14 @@ export async function scroll(page: Page, to: ScrollTo): Promise<number> {
     await page.waitForTimeout(150);
   } else {
     // To an end: turn the wheel until it stops moving.
-    for (let turns = 0, last = start; turns < 50; turns++) {
+    for (let turns = 0, last = start.y; turns < 50; turns++) {
       await page.mouse.wheel(0, (to.end === 'bottom' ? 1 : -1) * view.height * 2);
       await page.waitForTimeout(80);
-      const now = await position();
+      const now = (await position()).y;
       if (now === last) break;
       last = now;
     }
   }
-  return Math.round(Math.abs((await position()) - start));
+  const end = await position();
+  return Math.round(Math.hypot(end.x - start.x, end.y - start.y));
 }
