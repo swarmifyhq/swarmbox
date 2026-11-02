@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  pendingSince,
   redactBody,
   redactUrl,
   requestLine,
@@ -105,5 +106,29 @@ describe('what a screen’s request log keeps', () => {
       '#4 10:00:00.000 POST /api/approve → 400 (12 ms)\n    sent: {"note":"x"}\n    got: {"detail":"no"}',
     );
     expect(requestLine(records[3]!, now)).not.toContain('sent:');
+  });
+
+  it('says which of an action’s requests are still to wait for: not a stream, not an asset, not one before it', () => {
+    const r = (seq: number, type: string, more: Partial<RequestRecord> = {}): RequestRecord => ({
+      seq,
+      at: '2026-10-28T10:00:00.000Z',
+      method: 'GET',
+      url: `/r${seq}`,
+      type,
+      state: 'open',
+      ...more,
+    });
+    const records = [
+      r(1, 'fetch'),
+      r(2, 'fetch', { method: 'POST' }),
+      r(3, 'fetch', { state: 'done', status: 200 }),
+      r(4, 'eventsource'),
+      r(5, 'fetch', { status: 200, contentType: 'text/event-stream' }),
+      r(6, 'image'),
+      r(7, 'document'),
+      r(8, 'xhr', { state: 'failed' }),
+    ];
+    expect(pendingSince(records, 1).map((x) => x.seq)).toEqual([2, 7]);
+    expect(pendingSince(records, 7)).toEqual([]);
   });
 });

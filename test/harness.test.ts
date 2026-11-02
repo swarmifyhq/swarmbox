@@ -395,6 +395,27 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await call('screen_close', { screen });
   });
 
+  it('says what an action changed once the requests it started are done, a page swapped in place included', async () => {
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'north-ana' })).text,
+    )![1]!;
+    const t0 = Date.now();
+    const signed = await call('screen_act', {
+      screen,
+      action: { kind: 'click', role: 'button', name: 'Sign' },
+    });
+    // The server took 1.5 s: the readout waited for it, then saw the receipt replace the page's heading.
+    expect(Date.now() - t0).toBeGreaterThan(1400);
+    expect(signed.text).toContain('heading: "You signed it"');
+    expect(signed.text).toContain('heading gone: "Jobs at north"');
+    expect(signed.text).not.toContain('waiting:');
+    // A live stream is never waited for.
+    const t1 = Date.now();
+    await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Listen' } });
+    expect(Date.now() - t1).toBeLessThan(5000);
+    await call('screen_close', { screen });
+  });
+
   it('refuses a click behind an open dialog, naming the dialog', async () => {
     const screen = h.screens().find((s) => s.persona.id === 'north-ana')!.id;
     await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Send estimate' } });

@@ -139,6 +139,8 @@ export interface RequestLog {
   records: RequestRecord[];
   /** The record a response belongs to, for the readout's refusal lines. */
   seqOf(r: PwRequest): number | undefined;
+  /** The last record's number: an action's requests are the ones after it. */
+  last(): number;
   onRequest(r: PwRequest): void;
   onResponse(r: PwResponse): void;
   onFinished(r: PwRequest): Promise<void>;
@@ -153,6 +155,7 @@ export function requestLog(origin: string): RequestLog {
   return {
     records,
     seqOf: (r) => live.get(r)?.rec.seq,
+    last: () => seq,
     onRequest(r) {
       // A page load ends what the page before it had open (a live stream, a long poll), and Chromium reports
       // no end for a response it had already started streaming.
@@ -207,6 +210,20 @@ export function requestLog(origin: string): RequestLog {
       it.rec.failure = r.failure()?.errorText ?? 'failed';
     },
   };
+}
+
+/** Kinds an action waits for: what the page asked its servers for, and a page load. */
+const AWAITED = new Set(['fetch', 'xhr', 'document']);
+
+/**
+ * The requests started after `after` that an action should still wait for: open ones the page asked for, not
+ * a live stream (an event stream never ends, by design).
+ */
+export function pendingSince(records: RequestRecord[], after: number): RequestRecord[] {
+  return records.filter(
+    (r) =>
+      r.seq > after && r.state === 'open' && AWAITED.has(r.type) && r.contentType !== 'text/event-stream',
+  );
 }
 
 export interface RequestQuery {
