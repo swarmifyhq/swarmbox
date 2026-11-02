@@ -266,6 +266,12 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         '--disable-renderer-backgrounding',
       ],
       ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
+      // Signals are Swarmbox's (serve): it stops every world, then closes the browsers. Left to Playwright, Ctrl-C
+      // closed the browsers and exited the process at once, cutting short a world still stopping: its servers
+      // and database were left running.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
     });
   const browserFor = (origin: string): Promise<Browser> => {
     let b = browsers.get(origin);
