@@ -49,7 +49,11 @@ export interface WorldSpec {
 export interface StandInEndpoint {
   /** The stand-in's base addresses by the manifest's names: point the product's real client at these. */
   baseUrls: Record<string, string>;
-  /** A provider account for one tenant: credentials the product provisions that tenant with, all marked fake. */
+  /**
+   * A provider account for one tenant: credentials the product provisions that tenant with, all marked fake. Asked
+   * again for the same tenant: the same credentials, with the settings given changed (a webhook the product only
+   * knows once it has connected the account), as a person would change them in the provider's console.
+   */
   account(tenant: string, settings?: Record<string, string>): Promise<Record<string, string>>;
 }
 
