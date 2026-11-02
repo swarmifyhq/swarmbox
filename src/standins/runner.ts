@@ -482,7 +482,7 @@ export async function startStandIn(options: StandInOptions): Promise<StandIn> {
       operation: null,
       tenant: null,
       method: plain(method, 16),
-      target: plain(url, 300),
+      target: redactTarget(plain(url, 300)),
       status: null,
       sent: why,
     });

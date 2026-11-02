@@ -272,11 +272,18 @@ describe('a stand-in a product talks to as its provider', () => {
     );
 
     await expect(
-      s.inbound('reply', { tenant: 'north', from: '+1', body: 'x', url: 'https://example.com/steal' }),
+      s.inbound('reply', {
+        tenant: 'north',
+        from: '+1',
+        body: 'x',
+        url: 'https://example.com/steal?token=hunter2',
+      }),
     ).resolves.toEqual({ delivered: 0 });
-    expect(s.log().some((e) => e.kind === 'refused' && e.sent === "refused: not this world's product")).toBe(
-      true,
-    );
+    const refused = s
+      .log()
+      .find((e) => e.kind === 'refused' && e.sent === "refused: not this world's product");
+    // A refused address is logged with its secrets replaced, as a delivered one is.
+    expect(refused?.target).toBe('https://example.com/steal?token=[redacted]');
     await expect(s.inbound('dispute', {})).rejects.toThrow(/has no inbound "dispute"/);
   });
 });

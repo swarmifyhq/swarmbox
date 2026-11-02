@@ -110,9 +110,10 @@ server does. Swarmbox does everything that touches the network, for every stand-
   applied here.
 - **It keeps the log.** Every request, answer and delivery, in order. So `standin_log` works the same for every
   stand-in, and a stand-in can't hide or invent traffic. Secrets are replaced before anything is kept, as in a
-  screen's own request log: values whose names say they are secrets (in JSON, forms, query strings, XML elements
-  and attributes, and name/value pairs such as a report server's `<Name>Password</Name><Value>…</Value>`), and
-  values shaped like tokens. Each body is then cut to 4 KB.
+  screen's own request log: values whose names say they are secrets (in JSON, forms and multipart forms, query
+  strings, XML elements, CDATA and attributes, name/value pairs such as a report server's
+  `<Name>Password</Name><Value>…</Value>` in any case, and a validation error that echoes a refused field as
+  `"input"`), and values shaped like tokens. Each body is then cut to 4 KB.
 
 The stand-in's own messages are for what only it knows:
 

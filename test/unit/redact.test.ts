@@ -41,6 +41,90 @@ describe('redact', () => {
     expect(redactBody('Hello there, a=b and c')).toBe('Hello there, a=b and c');
   });
 
+  it('reads a name/value pair whatever its keys’ case, and a validation error that echoes what it refused', () => {
+    expect(
+      JSON.parse(redactBody('[{"Name":"Password","Value":"hunter2"},{"NAME":"Site","VALUE":"North"}]')),
+    ).toEqual([
+      { Name: 'Password', Value: '[redacted]' },
+      { NAME: 'Site', VALUE: 'North' },
+    ]);
+    // FastAPI's 422: the field is named by its loc, and the value it refused comes back as input.
+    const refused = JSON.parse(
+      redactBody(
+        JSON.stringify({
+          detail: [
+            { type: 'string_too_short', loc: ['body', 'password'], msg: 'too short', input: 'hunter2' },
+            { type: 'missing', loc: ['body', 'site'], msg: 'Field required', input: 'North' },
+            { type: 'model_type', loc: ['body'], msg: 'bad', input: { user: 'ana', apiKey: 'hunter3' } },
+          ],
+        }),
+      ),
+    ) as { detail: { input: unknown }[] };
+    expect(refused.detail.map((d) => d.input)).toEqual([
+      '[redacted]',
+      'North',
+      { user: 'ana', apiKey: '[redacted]' },
+    ]);
+  });
+
+  it('redacts a typed SOAP name, a CDATA value, and a multipart form’s secret fields', () => {
+    const soap =
+      '<Name xsi:type="xsd:string">Password</Name> <Value xsi:type="xsd:string">hunter2</Value>' +
+      '<ns:Token><![CDATA[hunter3]]></ns:Token><Note><![CDATA[keep me]]></Note>';
+    const out = redactBody(soap, 'text/xml');
+    expect(out).not.toMatch(/hunter/);
+    expect(out).toContain('<Value xsi:type="xsd:string">[redacted]</Value>');
+    expect(out).toContain('<ns:Token>[redacted]</ns:Token>');
+    expect(out).toContain('<Note><![CDATA[keep me]]></Note>');
+    // A body that already holds the characters a section is set aside with is read as it is.
+    expect(redactBody('<a>\uE0007\uE001</a><Password>x</Password>')).toBe(
+      '<a>\uE0007\uE001</a><Password>[redacted]</Password>',
+    );
+
+    const form = [
+      '--b0undary',
+      'Content-Disposition: form-data; name="user"',
+      '',
+      'ana',
+      '--b0undary',
+      'Content-Disposition: form-data; name="password"',
+      '',
+      'hunter2',
+      '--b0undary',
+      'Content-Disposition: form-data; name="meta"',
+      'Content-Type: application/json',
+      '',
+      '{"apiKey":"hunter3","site":"North"}',
+      '--b0undary--',
+      '',
+    ].join('\r\n');
+    const sent = redactBody(form, 'multipart/form-data; boundary=b0undary');
+    expect(sent).not.toMatch(/hunter/);
+    expect(sent).toContain('name="user"\r\n\r\nana\r\n');
+    expect(sent).toContain('name="password"\r\n\r\n[redacted]\r\n--b0undary');
+    expect(sent).toContain('{"apiKey":"[redacted]","site":"North"}');
+    expect(sent.endsWith('--b0undary--\r\n')).toBe(true);
+  });
+
+  it('reads a megabyte built to make a pattern backtrack in well under a second', () => {
+    const MB = 1024 * 1024;
+    const bodies = [
+      '<Name>' + ' '.repeat(MB),
+      '<Name>a</Name>' + ' '.repeat(MB),
+      '<'.repeat(MB),
+      '<a x'.repeat(MB / 4),
+      '<a><![CDATA['.repeat(MB / 12),
+      '<Name>Password</Name><Value><![CDATA['.repeat(MB / 37),
+      '"a"' + ' '.repeat(MB),
+      '{"password":"' + 'a'.repeat(MB),
+    ];
+    for (const body of bodies) {
+      const started = performance.now();
+      redactBody(body, 'text/xml');
+      expect(performance.now() - started, body.slice(0, 40)).toBeLessThan(1000);
+    }
+  });
+
   it('redacts a request’s query and leaves a word that is not a path alone', () => {
     expect(redactTarget('/ReportServer?rs:Command=Render&pwd=hunter2&id=4')).toBe(
       '/ReportServer?rs%3ACommand=Render&pwd=[redacted]&id=4',

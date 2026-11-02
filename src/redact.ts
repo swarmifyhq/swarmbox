@@ -3,8 +3,12 @@
 // is replaced before it is stored, never after.
 //
 // A value is a secret's when its name says so, or when it is shaped like a token. Names are read in JSON, in a
-// form, in a query string, in XML elements and attributes, and in name/value pairs (a report server's
-// <Name>Password</Name><Value>…</Value>, or {"name": "password", "value": "…"}).
+// form (urlencoded or multipart), in a query string, in XML elements and attributes, and in name/value pairs (a
+// report server's <Name>Password</Name><Value>…</Value>, {"name": "password", "value": "…"}, or a validation
+// error's {"loc": ["body", "password"], "input": "…"}).
+//
+// Bodies run to a megabyte and are read on the server's own thread, so every pattern is bounded: none may
+// backtrack its way through a body built to make it.
 
 /** A name is a secret's when its last word is one of these, or its last two are one of the pairs. */
 const SECRET_WORDS = new Set([
@@ -77,19 +81,34 @@ export function redactTarget(target: string): string {
   return target.startsWith('/') ? redactUrl(`${here}${target}`, here) : target;
 }
 
-/** The key that names a name/value pair's secret: {"name": "password", "value": "…"}. */
-const PAIR_NAME = ['name', 'key', 'field', 'parameter'];
+/** The keys that name a name/value pair's secret, in any case: {"Name": "Password", "Value": "…"}. */
+const PAIR_NAME = new Set(['name', 'key', 'field', 'parameter']);
+/** The keys that hold its value: a validation error echoes what it refused as "input". */
+const PAIR_VALUE = new Set(['value', 'input']);
+
+/** What a pair is named: by one of its name keys, or by the last word of a validation error's loc. */
+function pairName(o: Record<string, unknown>): string | undefined {
+  for (const [k, x] of Object.entries(o)) {
+    const key = k.toLowerCase();
+    if (PAIR_NAME.has(key) && typeof x === 'string') return x;
+    if (key === 'loc' && Array.isArray(x)) {
+      const last = x.at(-1);
+      if (typeof last === 'string') return last;
+    }
+  }
+  return undefined;
+}
 
 function redactJson(v: unknown, name = ''): unknown {
   if (typeof v === 'string') return secretValue(name, v) ? REDACTED : v;
   if (Array.isArray(v)) return v.map((x) => redactJson(x, name));
   if (v && typeof v === 'object') {
     const o = v as Record<string, unknown>;
-    const named = PAIR_NAME.map((k) => o[k]).find((n): n is string => typeof n === 'string');
-    const pair = named !== undefined && secretName(named) && 'value' in o;
+    const named = pairName(o);
+    const pair = named !== undefined && secretName(named);
     return Object.fromEntries(
       Object.entries(o).map(([k, x]) =>
-        (secretName(k) || (pair && k === 'value')) && x !== null && typeof x !== 'object'
+        (secretName(k) || (pair && PAIR_VALUE.has(k.toLowerCase()))) && x !== null && typeof x !== 'object'
           ? [k, REDACTED]
           : [k, redactJson(x, k)],
       ),
@@ -119,14 +138,61 @@ function redactForm(t: string): string {
     .join('&');
 }
 
+/** A multipart form's parts, each a secret's when its name is. */
+function redactMultipart(body: string, boundary: string): string {
+  const sep = `--${boundary}`;
+  return body
+    .split(sep)
+    .map((part) => {
+      const gap = /\r?\n\r?\n/.exec(part);
+      if (!gap) return part;
+      const headers = part.slice(0, gap.index);
+      const content = part.slice(gap.index + gap[0].length);
+      // The part ends at the line break before the next boundary.
+      const end = /\r?\n$/.exec(content)?.[0] ?? '';
+      const value = content.slice(0, content.length - end.length);
+      const name = /\bname="([^"]*)"/i.exec(headers)?.[1];
+      const type = /^content-type:[ \t]*([^\r\n]*)/im.exec(headers)?.[1] ?? '';
+      const kept = name !== undefined && secretName(name) ? REDACTED : redactBody(value, type);
+      return `${headers}${gap[0]}${kept}${end}`;
+    })
+    .join(sep);
+}
+
 const FORM_SHAPED = /^[^\s=&<>{}]+=[^\s&]*(&[^\s=&]+=[^\s&]*)*$/;
 /** <ns:Password attr="…">value</ns:Password>: the value. */
-const XML_ELEMENT = /<((?:[\w.-]+:)?([\w.-]+))(\s[^>]*)?>([^<]*)<\/\1\s*>/g;
-/** <Name>Password</Name> <Value>value</Value>: the value. */
-const XML_PAIR =
-  /(<((?:[\w.-]+:)?Name)\s*>\s*([^<]+?)\s*<\/\2\s*>\s*<((?:[\w.-]+:)?Value)\s*>)([^<]*)(<\/\4\s*>)/gi;
+const XML_ELEMENT = /<((?:[\w.-]{1,64}:)?([\w.-]{1,128}))(\s[^<>]{0,2048})?>([^<]*)<\/\1\s{0,16}>/g;
+/** <Name xsi:type="…">Password</Name> <Value>value</Value>: the value. */
+const XML_PAIR = new RegExp(
+  '(<((?:[\\w.-]{1,64}:)?Name)(?:\\s[^<>]{0,2048})?>([^<]{0,256})<\\/\\2\\s{0,16}>\\s{0,256}' +
+    '<((?:[\\w.-]{1,64}:)?Value)(?:\\s[^<>]{0,2048})?>)([^<]*)(<\\/\\4\\s{0,16}>)',
+  'gi',
+);
+/** Where a CDATA section was set aside: its number between two private-use characters. */
+const SET_ASIDE = /\uE000(\d+)\uE001/g;
+
+/**
+ * The text with each CDATA section set aside (its value may hold "<"), so an element whose value is one reads
+ * as an element with text. Found by indexOf, so a section never closed is never rescanned.
+ */
+function setAsideCdata(t: string): { text: string; sections: string[] } {
+  const sections: string[] = [];
+  if (t.includes('\uE000')) return { text: t, sections };
+  let text = '';
+  let at = 0;
+  for (let open = t.indexOf('<![CDATA['); open >= 0; open = t.indexOf('<![CDATA[', at)) {
+    const close = t.indexOf(']]>', open + 9);
+    if (close < 0) break;
+    text += `${t.slice(at, open)}\uE000${sections.length}\uE001`;
+    sections.push(t.slice(open, close + 3));
+    at = close + 3;
+  }
+  return { text: text + t.slice(at), sections };
+}
+/** A tag, up to the next angle bracket, so a run of "<" never rescans the rest of the body. */
+const XML_TAG = /<[^<>]*>/g;
 /** password="value" inside a tag. */
-const XML_ATTRIBUTE = /(\s([\w.:-]+)\s*=\s*)("[^"]*"|'[^']*')/g;
+const XML_ATTRIBUTE = /(\s([\w.:-]{1,128})\s{0,16}=\s{0,16})("[^"]*"|'[^']*')/g;
 /** "password": "value" in JSON that could not be read whole (cut short), the value perhaps unfinished. */
 const JSON_PAIR = /("([^"\\]{1,100})"\s*:\s*)"((?:[^"\\]|\\.)*)("?)/g;
 
@@ -134,18 +200,20 @@ const JSON_PAIR = /("([^"\\]{1,100})"\s*:\s*)"((?:[^"\\]|\\.)*)("?)/g;
 function redactText(t: string): string {
   let out = t;
   if (out.includes('<')) {
-    out = out
+    const { text, sections } = setAsideCdata(out);
+    out = text
       .replace(XML_PAIR, (m, open: string, _n, name: string, _v, _value, close: string) =>
-        secretName(name) ? `${open}${REDACTED}${close}` : m,
+        secretName(name.trim()) ? `${open}${REDACTED}${close}` : m,
       )
       .replace(XML_ELEMENT, (m, tag: string, local: string, attrs: string | undefined, value: string) =>
         secretName(local) && value.trim() ? `<${tag}${attrs ?? ''}>${REDACTED}</${tag}>` : m,
       )
-      .replace(/<[^>]*>/g, (tag) =>
+      .replace(XML_TAG, (tag) =>
         tag.replace(XML_ATTRIBUTE, (m, lead: string, name: string, q: string) =>
           secretName(name) ? `${lead}${q[0]}${REDACTED}${q[0]}` : m,
         ),
-      );
+      )
+      .replace(SET_ASIDE, (m, i: string) => sections[Number(i)] ?? m);
   }
   out = out.replace(JSON_PAIR, (m, lead: string, name: string, value: string, end: string) =>
     secretValue(name, value) ? `${lead}"${REDACTED}${end}` : m,
@@ -154,10 +222,14 @@ function redactText(t: string): string {
 }
 
 /**
- * A body with its secrets replaced: JSON by key (and name/value pairs), a form by field, XML by element,
- * attribute and name/value pair, anything else only if it is one token.
+ * A body with its secrets replaced: JSON by key (and name/value pairs), a form by field (a multipart one by
+ * part), XML by element, attribute and name/value pair, anything else only if it is one token.
  */
 export function redactBody(body: string, contentType = ''): string {
+  const multipart = /multipart\/form-data/i.test(contentType)
+    ? /boundary=(?:"([^"]{1,200})"|([^;\s]{1,200}))/i.exec(contentType)
+    : null;
+  if (multipart) return redactMultipart(body, multipart[1] ?? multipart[2]!);
   const t = body.trim();
   if (/json/.test(contentType) || /^[[{]/.test(t)) {
     try {
