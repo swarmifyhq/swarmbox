@@ -2,7 +2,8 @@
 // own copy of the algorithm, and the timestamp within five minutes of the world's (moved) clock.
 
 import { createHash, createHmac } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -220,6 +221,11 @@ describe('the email stand-in', () => {
       })
     ).json()) as { data: { id: string }[] };
     expect(rest.data.map((a) => a.id)).toEqual([list.data[1]!.id]);
+    // A cursor that names nothing in the list is refused, not read as the start.
+    for (const path of [`/emails/${id}/attachments?after=nope`, '/emails?before=nope']) {
+      const r = await fetch(`${email.baseUrls.api}${path}`, { headers: auth });
+      expect(r.status, path).toBe(422);
+    }
 
     const one = (await (
       await fetch(`${email.baseUrls.api}/emails/${id}/attachments/${list.data[0]!.id}`, { headers: auth })
@@ -228,6 +234,7 @@ describe('the email stand-in', () => {
     const got = await fetch(one.download_url);
     expect(got.status).toBe(200);
     expect(got.headers.get('content-type')).toBe('application/pdf');
+    expect(got.headers.get('content-disposition')).toBe('attachment; filename="Roof contract (signed).pdf"');
     expect(
       createHash('sha256')
         .update(Buffer.from(await got.arrayBuffer()))
@@ -280,8 +287,36 @@ describe('the email stand-in', () => {
     expect(createHash('sha256').update(readFileSync(mail!.attachments[0]!.file)).digest('hex')).toBe(sha);
   });
 
-  it('refuses an attachment with neither content nor a path, as Resend does', async () => {
-    const r = await send('casey@contractor.example', { attachments: [{ filename: 'x.pdf' }] });
+  it('refuses an attachment with neither content nor a path, as Resend does, and keeps none of its files', async () => {
+    const [mail] = (await email.inbound('mailbox', { to: 'casey@contractor.example' })) as {
+      attachments: { file: string }[];
+    }[];
+    const folder = dirname(dirname(mail!.attachments[0]!.file));
+    const kept = readdirSync(folder).length;
+    const r = await send('casey@contractor.example', {
+      attachments: [{ filename: 'fine.txt', content: [104, 105] }, { filename: 'x.pdf' }],
+    });
     expect(r.status).toBe(422);
+    expect(readdirSync(folder).length).toBe(kept);
+  });
+
+  it('downloads a file named in any script, and a type it can’t put in a header as bytes', async () => {
+    const r = await send('casey@contractor.example', {
+      attachments: [
+        { filename: '✓ 合同 "final".txt', content: [104, 105], content_type: 'text/plain; charset=✓' },
+      ],
+    });
+    const { id } = (await r.json()) as { id: string };
+    const auth = { authorization: `Bearer ${acct.apiKey}` };
+    const list = (await (
+      await fetch(`${email.baseUrls.api}/emails/${id}/attachments`, { headers: auth })
+    ).json()) as { data: { download_url: string }[] };
+    const got = await fetch(list.data[0]!.download_url);
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-type')).toBe('application/octet-stream');
+    expect(got.headers.get('content-disposition')).toBe(
+      `attachment; filename="_ __ _final_.txt"; filename*=UTF-8''${encodeURIComponent('✓ 合同 "final".txt')}`,
+    );
+    expect(Buffer.from(await got.arrayBuffer()).toString()).toBe('hi');
   });
 });

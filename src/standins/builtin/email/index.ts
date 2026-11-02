@@ -79,14 +79,20 @@ function bytesOf(content: unknown): Buffer | null {
 function keepAttachments(raw: unknown, emailId: string, ctx: StandInContext): Attachment[] | Reply {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) return err(422, 'validation_error', 'The `attachments` field must be an array.');
-  const out: Attachment[] = [];
-  for (const a of raw as Record<string, unknown>[]) {
-    const filename = typeof a?.filename === 'string' && a.filename ? a.filename : 'attachment';
-    const bytes = a?.content === undefined ? null : bytesOf(a.content);
+  // Every attachment is checked before any is kept, so a refused email leaves no files behind.
+  const sent = (raw as Record<string, unknown>[]).map((a) => ({
+    a,
+    bytes: a?.content === undefined ? null : bytesOf(a.content),
+  }));
+  for (const { a, bytes } of sent) {
     if (a?.content !== undefined && !bytes)
       return err(422, 'validation_error', 'An attachment’s `content` must be base64 or a buffer.');
     if (!bytes && typeof a?.path !== 'string')
       return err(422, 'validation_error', 'An attachment needs `content` or `path`.');
+  }
+  const out: Attachment[] = [];
+  for (const { a, bytes } of sent) {
+    const filename = typeof a?.filename === 'string' && a.filename ? a.filename : 'attachment';
     const id = randomUUID();
     let file: string | null = null;
     if (bytes) {
@@ -112,6 +118,19 @@ function keepAttachments(raw: unknown, emailId: string, ctx: StandInContext): At
     });
   }
   return out;
+}
+
+/**
+ * A download's content-disposition: a plain-ASCII filename for any client, and the name itself, encoded, for
+ * those that read filename* (RFC 6266). A header must be Latin-1, so the name never goes in raw.
+ */
+function contentDisposition(filename: string): string {
+  const plain = filename.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${plain}"${plain === filename ? '' : `; filename*=UTF-8''${encoded}`}`;
 }
 
 /** Where attachments are kept: the stand-in's own folder, once one has come. */
@@ -321,8 +340,15 @@ defineStandIn({
         return err(422, 'validation_error', 'The `limit` must be between 1 and 100.');
       let list = [...emails.values()].filter((e) => e.tenant === who.tenant).reverse();
       const at = (id: string) => list.findIndex((e) => e.id === id);
+      const cursor = after ?? before;
+      if (cursor && at(cursor) < 0)
+        return err(
+          422,
+          'validation_error',
+          `No item with the id given as \`${after ? 'after' : 'before'}\`.`,
+        );
       if (after) list = list.slice(at(after) + 1);
-      if (before) list = at(before) < 0 ? list : list.slice(0, at(before));
+      if (before) list = list.slice(0, at(before));
       const page = before ? list.slice(-limit) : list.slice(0, limit);
       return json(200, {
         object: 'list',
@@ -373,8 +399,15 @@ defineStandIn({
         return err(422, 'validation_error', 'The `limit` must be between 1 and 100.');
       let list = e.attachments;
       const at = (id: string) => list.findIndex((a) => a.id === id);
+      const cursor = after ?? before;
+      if (cursor && at(cursor) < 0)
+        return err(
+          422,
+          'validation_error',
+          `No item with the id given as \`${after ? 'after' : 'before'}\`.`,
+        );
       if (after) list = list.slice(at(after) + 1);
-      if (before) list = at(before) < 0 ? list : list.slice(0, at(before));
+      if (before) list = list.slice(0, at(before));
       const page = before ? list.slice(-limit) : list.slice(0, limit);
       return json(200, {
         object: 'list',
@@ -404,8 +437,9 @@ defineStandIn({
       return {
         status: 200,
         headers: {
-          'content-type': a.contentType,
-          'content-disposition': `attachment; filename="${a.filename.replace(/["\\\r\n]/g, '_')}"`,
+          // The product named the type: a header holds only printable ASCII.
+          'content-type': /^[\x20-\x7e]+$/.test(a.contentType) ? a.contentType : 'application/octet-stream',
+          'content-disposition': contentDisposition(a.filename),
         },
         body: readFileSync(a.file),
       };
