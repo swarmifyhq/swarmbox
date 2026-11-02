@@ -14,14 +14,19 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
   says what is in the way; of two buttons with one name, the one in the dialog in front is meant.
 - **Worlds.** Each run starts your product the way it is deployed, with its own data, on tenant hosts that
   resolve only inside the browsers Swarmbox launches. Nothing is shared with other runs or with real data.
+  Name what your pages load from outside (`browserAllow`: fonts, maps), or say `contain: true`, and a world's
+  browsers reach only the world, its stand-ins and those; anything else is blocked and shows as a signal.
+  Without either they can reach anything this machine can, and `world_list` says so: if your app knows a real
+  outside address (an identity provider, an API), contain it.
 - **People.** Everyone in the world, signed in without a password, each on their own screen; a tablet
   app past its first screen; a customer at a link, with no sign-in at all. Any screen can be a phone, a
   tablet either way up or a desktop, light or dark.
 - **The device and props.** Swarmbox makes the photos, documents and signatures a person would use, each tagged
   with its id. It puts them in a screen's file chooser (a tablet's camera button) or in front of its live camera,
   and sets where the device is and whether it shows notifications.
-- **Hands on the screen.** Click, type, choose, press keys, draw (a signature pad) and drag with the pointer
-  (a block onto another lane, an edge to resize), each element found by its accessible role and name. A styled
+- **Hands on the screen.** Click, type, choose, press keys, scroll, draw (a signature pad) and drag with the pointer
+  (a block onto another lane, an edge to resize, a box onto a page below the fold, scrolling on the way), each
+  element found by its accessible role and name. A styled
   radio or checkbox is clicked through the label drawn over it, and of two alike in stacked layers, the one in
   front is taken.
 - **Time.** Move a world's clock forward, and every screen follows; people stay signed in across the jump
@@ -36,6 +41,10 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
   actions on that screen are refused.
 - **The world's own log** (`world_log`), when the product shares it: the stack behind a screen's
   "something went wrong", while the world runs.
+- **A screen's own requests** (`screen_requests`): what it asked its servers for, with status, timing, and the
+  start of what was sent and what came back, and what it keeps open (a live stream). An action's "refused:" line
+  gives each refusal's number, with the server's reason (`error.message`, or FastAPI's `detail`). No headers are
+  kept, and secrets in addresses and bodies are redacted.
 - **A daily budget** in browser-minutes and runs.
 
 ## Install
