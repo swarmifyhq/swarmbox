@@ -332,6 +332,11 @@ async function startSample(
         receipts.push(`${tenant} ${body}`);
         return res.writeHead(204).end();
       }
+      // Sign-up makes a shop during the run, on its own host, with its own people.
+      if (url.pathname === '/api/signup' && req.method === 'POST') {
+        feeds.set(body, []);
+        return json(200, { shop: body });
+      }
       // Email me a code: sent as the sample itself, not as the shop, so it is filed under its platform mailbox.
       if (url.pathname === '/api/code' && req.method === 'POST') {
         inbox.push({
@@ -414,7 +419,8 @@ async function startSample(
     receipts,
     uploads,
     cards: cards ? { api: cards.baseUrls.api!, accounts: cardAccounts } : null,
-    people: async () => tenants.flatMap(PEOPLE),
+    currentTenants: async () => [...feeds.keys()],
+    people: async () => [...feeds.keys()].flatMap(PEOPLE),
     signIn: async (p, app): Promise<SignIn> =>
       app === 'tech'
         ? {

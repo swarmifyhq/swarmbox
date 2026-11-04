@@ -99,6 +99,12 @@ export interface ProductWorld {
   /** The port the product serves the tenants' hosts on. */
   port: number;
   tenants: string[];
+  /**
+   * The tenants as they stand now, for a product where one can be made during a run (its own sign-up). Asked when
+   * a link names a tenant `tenants` doesn't have, or people are listed; the answer becomes `tenants`. Without it a
+   * tenant made during a run can't be reached by link. people() should list the new tenant's people too.
+   */
+  currentTenants?(): Promise<string[]>;
   /** `http://<tenant>.<baseDomain>:<port>`. */
   origin(tenant: string): string;
   /** The product code it runs: a finding is only as good as the commit it names. */

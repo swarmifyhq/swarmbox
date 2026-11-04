@@ -19,7 +19,7 @@ import { readInbox } from './inbox.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
-import { HarnessError, type Action, type Harness } from '../harness.ts';
+import { HarnessError, refreshTenants, type Action, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
 import { createRuns, type Runs } from '../runs/run.ts';
@@ -159,14 +159,16 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       annotations: { readOnlyHint: true },
     },
     async () =>
-      guard(async () =>
-        text(
+      guard(async () => {
+        // A tenant made during a run (the product's own sign-up) is listed with the rest.
+        await Promise.all(h.worlds().map((w) => refreshTenants(w)));
+        return text(
           h
             .worlds()
             .map((w) => describeWorld(h, w.id))
             .join('\n\n') || 'no worlds running',
-        ),
-      ),
+        );
+      }),
   );
 
   const hooksOf = (world: string) => h.hooks(world);

@@ -418,6 +418,33 @@ export function linkPath(
   return { tenant, path };
 }
 
+/**
+ * The world's tenants as the product has them now (Product currentTenants), kept as `tenants`: a tenant made during
+ * the run, by the product's own sign-up, is then reachable like the rest. True when the list changed.
+ */
+export async function refreshTenants(w: { world: ProductWorld }): Promise<boolean> {
+  if (!w.world.currentTenants) return false;
+  const now = await w.world.currentTenants();
+  const known = new Set(w.world.tenants);
+  if (now.length === known.size && now.every((t) => known.has(t))) return false;
+  w.world.tenants = now;
+  return true;
+}
+
+/** linkPath, asking the product for its tenants again when the link names one the world didn't start with. */
+async function linkPathNow(
+  w: { world: ProductWorld },
+  link: string,
+  noun: string,
+): Promise<{ tenant: string; path: string }> {
+  try {
+    return linkPath(link, w.world, undefined, noun);
+  } catch (e) {
+    if (!(e instanceof HarnessError) || !(await refreshTenants(w))) throw e;
+    return linkPath(link, w.world, undefined, noun);
+  }
+}
+
 /** Text from a feed row's field, or nothing. */
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 
@@ -983,7 +1010,11 @@ export function createHarness<W extends ProductWorld>(
     worlds: () => [...worlds.values()],
     world: getWorld,
 
-    people: (worldId) => getWorld(worldId).world.people(),
+    async people(worldId) {
+      const w = getWorld(worldId);
+      await refreshTenants(w);
+      return w.world.people();
+    },
 
     async openScreen(worldId, personId, path, options = {}) {
       const w = getWorld(worldId);
@@ -1000,7 +1031,7 @@ export function createHarness<W extends ProductWorld>(
 
     async openLink(worldId, link, options = {}) {
       const w = getWorld(worldId);
-      const { tenant, path } = linkPath(link, w.world, undefined, noun);
+      const { tenant, path } = await linkPathNow(w, link, noun);
       const someone = (await w.world.people()).find((p) => p.tenant === tenant);
       // A stand-in: the tenant and its time zone are real, the person is whoever has the link.
       const persona: Persona = {

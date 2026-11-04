@@ -475,6 +475,36 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(h.world(world).world.requests).toContain('north GET /p/north/e/abc');
   });
 
+  it('reaches a shop made during the run, by the product’s own sign-up', async () => {
+    const port = h.world(world).world.port;
+    await new Promise<void>((done, fail) =>
+      http
+        .request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'POST',
+            path: '/api/signup',
+            headers: { host: `north.sample.test:${port}` },
+          },
+          (res) => res.resume().on('end', done),
+        )
+        .on('error', fail)
+        .end('harbour'),
+    );
+    const link = await call('screen_open', { world, link: 'http://harbour.sample.test/p/harbour/e/abc' });
+    expect(link.error).toBe(false);
+    expect(link.text).toContain('Your estimate');
+    expect((await call('world_list')).text).toContain(`harbour: http://harbour.sample.test:${port}`);
+    expect((await call('persona_list', { world })).text).toContain('harbour-ana  harbour  Ana (owner)');
+    const owner = await call('screen_open', { world, person: 'harbour-ana' });
+    expect(owner.error).toBe(false);
+    expect(h.world(world).world.requests).toContain('harbour GET /p/harbour/e/abc');
+    // A shop nobody made is still refused, once the product has been asked.
+    const none = await call('screen_open', { world, link: 'http://nowhere.sample.test/p/x' });
+    expect(none.text).toContain('this world has no shop nowhere');
+  });
+
   it('opens a screen as a phone or a turned tablet, light or dark', async () => {
     const look = async (args: Record<string, unknown>) => {
       const opened = await call('screen_open', { world, ...args });
