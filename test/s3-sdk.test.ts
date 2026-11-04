@@ -9,10 +9,13 @@ import {
   CreateMultipartUploadCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   S3ServiceException,
   UploadPartCommand,
+  paginateListObjectsV2,
   type ChecksumAlgorithm,
 } from '@aws-sdk/client-s3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -172,6 +175,58 @@ describe('the S3 stand-in, through the AWS SDK', () => {
       ),
     ).toBe('EntityTooLarge');
     expect(s3.stopped()).toBeNull();
+  });
+
+  it('lists a bucket’s keys, V2 and V1: under a prefix, rolled up at a delimiter, a page at a time', async () => {
+    const B = 'listing';
+    await client.send(new CreateBucketCommand({ Bucket: B }));
+    const keys = ['jobs/1/a.jpg', 'jobs/1/b.jpg', 'jobs/2/c.pdf', 'jobs/readme.txt', 'other/x', 'top.txt'];
+    for (const Key of keys) await client.send(new PutObjectCommand({ Bucket: B, Key, Body: Key }));
+
+    const all = await client.send(new ListObjectsV2Command({ Bucket: B }));
+    expect(all.Contents!.map((o) => o.Key)).toEqual(keys);
+    expect(all.KeyCount).toBe(6);
+    expect(all.Contents![0]!.Size).toBe(keys[0]!.length);
+
+    // A record's files, before cleaning them up: one folder, then its sub-folders rolled up.
+    const one = await client.send(new ListObjectsV2Command({ Bucket: B, Prefix: 'jobs/1/' }));
+    expect(one.Contents!.map((o) => o.Key)).toEqual(['jobs/1/a.jpg', 'jobs/1/b.jpg']);
+    const folders = await client.send(
+      new ListObjectsV2Command({ Bucket: B, Prefix: 'jobs/', Delimiter: '/' }),
+    );
+    expect(folders.CommonPrefixes!.map((p) => p.Prefix)).toEqual(['jobs/1/', 'jobs/2/']);
+    expect(folders.Contents!.map((o) => o.Key)).toEqual(['jobs/readme.txt']);
+
+    // Pages of two, keys and prefixes counted alike, the token carrying on where the last page ended.
+    const paged: string[] = [];
+    for await (const page of paginateListObjectsV2({ client, pageSize: 2 }, { Bucket: B, Delimiter: '/' }))
+      paged.push(
+        ...(page.CommonPrefixes ?? []).map((p) => p.Prefix!),
+        ...(page.Contents ?? []).map((o) => o.Key!),
+      );
+    expect(paged.sort()).toEqual(['jobs/', 'other/', 'top.txt']);
+    const pages: string[][] = [];
+    for await (const page of paginateListObjectsV2({ client, pageSize: 4 }, { Bucket: B }))
+      pages.push(page.Contents!.map((o) => o.Key!));
+    expect(pages).toEqual([keys.slice(0, 4), keys.slice(4)]);
+
+    // V1: a marker, and NextMarker on a page cut short.
+    const v1 = await client.send(new ListObjectsCommand({ Bucket: B, Marker: 'jobs/2/c.pdf', MaxKeys: 2 }));
+    expect(v1.Contents!.map((o) => o.Key)).toEqual(['jobs/readme.txt', 'other/x']);
+    expect(v1.IsTruncated).toBe(true);
+    expect(v1.NextMarker).toBe('other/x');
+    expect(await refusal(client.send(new ListObjectsV2Command({ Bucket: 'nobody-made-this' })))).toBe(
+      'NoSuchBucket',
+    );
+  });
+
+  it('has the buckets an account’s settings name before the product makes any', async () => {
+    const creds = await s3.account('platform', { region: 'ca-central-1', buckets: 'made-in-console, also' });
+    expect(creds.accessKeyId).toBeTruthy();
+    await client.send(new PutObjectCommand({ Bucket: 'made-in-console', Key: 'k', Body: 'v' }));
+    const listed = await client.send(new ListObjectsV2Command({ Bucket: 'made-in-console' }));
+    expect(listed.Contents!.map((o) => o.Key)).toEqual(['k']);
+    expect((await client.send(new ListObjectsV2Command({ Bucket: 'also' }))).KeyCount).toBe(0);
   });
 
   it('refuses a request signed for another region', async () => {

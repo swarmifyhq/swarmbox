@@ -24,6 +24,9 @@ Unreleased; the release names the version.
   click, drag and its `to`, and scroll. (Reported by Certainty.)
 - `drag` takes `grabOffset {x, y}`, CSS pixels added to where it is held, for a move handle beside the
   element (an icon with no name next to a row's text). (Reported by Certainty.)
+- The S3 stand-in lists a bucket's keys: ListObjects V1 and V2, with prefix, delimiter and common
+  prefixes, max-keys and paging. It used to answer 400 to a bucket list. An account's `buckets` setting
+  makes buckets that are there before the product starts. (Reported by Certainty.)
 - Devices `desktop-hd` (1920×1080) and `desktop-qhd` (2560×1440), for layouts that go wrong only on a big
   monitor. (Reported by Certainty.)
 
