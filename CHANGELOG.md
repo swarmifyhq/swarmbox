@@ -24,6 +24,13 @@ Unreleased; the release names the version.
   click, drag and its `to`, and scroll. (Reported by Certainty.)
 - `drag` takes `grabOffset {x, y}`, CSS pixels added to where it is held, for a move handle beside the
   element (an icon with no name next to a row's text). (Reported by Certainty.)
+- An overlay a dialog opened (a dropdown's panel, which PrimeNG, Radix and others put at the end of the
+  page, outside the dialog) counts as in front when it is drawn over the dialog: its options can be
+  clicked, not refused as "behind the open dialog". (Reported by Certainty.)
+- A dropdown with no accessible name is found by its label, its placeholder, or the text it shows
+  ("Choose groups"). (Reported by Certainty.)
+- Of several matches alike, each is described by the row it's in or the heading above it, so one can be
+  picked by index. (Reported by Certainty.)
 - An action's readout says more of what changed: a menu, listbox or tooltip that opened or closed, new
   text and text gone (an inline form, a total, a validation message in no live region), and the same text
   in a new order (a drag that reorders). "Nothing a person would notice" now means it. (Reported by

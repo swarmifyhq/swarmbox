@@ -288,11 +288,23 @@ export async function pickAmong(
         // such as the scrim a non-modal layer puts over the page behind it.
         const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
         const label = hit?.closest('label');
+        const onTop = Boolean(hit && (el.contains(hit) || label?.contains(el) || label?.control === el));
+        // Where it is, for telling matches apart: the row it's in, else the nearest heading above it.
+        const text = (n: Element) => (n.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        const row = el.closest('tr, [role="row"], li, [role="listitem"]');
+        let under = '';
+        for (let a = el.parentElement; a && !under; a = a.parentElement) {
+          const h = a.querySelector('h1, h2, h3, h4, [role="heading"], legend');
+          if (h && !h.contains(el)) under = text(h);
+        }
         return {
           dialog: d ? name(d) : null,
-          inFront: Boolean(front?.contains(el)),
+          // A dropdown's panel is often put at the end of the page, outside the dialog that opened it, and
+          // drawn over it: what a pointer lands on is in front, wherever it sits in the page.
+          inFront: Boolean(front?.contains(el)) || (front !== null && onTop),
           visible: b.width > 0 && b.height > 0,
-          onTop: Boolean(hit && (el.contains(hit) || label?.contains(el) || label?.control === el)),
+          onTop,
+          where: row && row !== el && text(row) ? `in row "${text(row)}"` : under ? `under "${under}"` : '',
         };
       }),
     };
@@ -314,7 +326,7 @@ export async function pickAmong(
     index: null,
     described: each.map(
       (m) =>
-        `${m.i}: ${m.dialog ? `in "${m.dialog}"` : 'on the page'}${m.visible ? '' : ', hidden'}` +
+        `${m.i}: ${m.dialog ? `in "${m.dialog}"` : 'on the page'}${m.where ? `, ${m.where}` : ''}${m.visible ? '' : ', hidden'}` +
         `${top !== null && !m.inFront ? `, behind the dialog "${top}"` : ''}` +
         `${m.visible && !m.onTop ? ', covered' : ''}`,
     ),
@@ -333,6 +345,10 @@ export async function behindModal(el: Locator): Promise<string | null> {
       );
       const front = modals.filter((m) => !modals.some((o) => o !== m && m.contains(o))).at(-1);
       if (!front || front.contains(e)) return null;
+      // An overlay the dialog opened (a dropdown's panel at the end of the page) is drawn over it: reachable.
+      const b = e.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      if (b.width > 0 && b.height > 0 && hit && e.contains(hit)) return null;
       return name(front) || 'a dialog';
     })
     .catch(() => null);

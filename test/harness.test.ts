@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { createHarness, type Harness } from '../src/harness.ts';
 import { createRuns } from '../src/runs/run.ts';
 import { parseKey, totp } from '../src/mcp/authenticator.ts';
@@ -673,6 +673,36 @@ describe('the pointer, and screens with layers', () => {
   it('says what text came, when no status line or heading does', async () => {
     const checked = await act({ kind: 'click', role: 'button', name: 'Check the form' });
     expect(checked.text).toContain('changed: new text: "A selection is mandatory"');
+  });
+
+  it('says where each of several alike is, to pick one by', async () => {
+    const two = await act({ kind: 'click', role: 'button', name: 'Edit' });
+    expect(two.error).toBe(true);
+    expect(two.text).toContain('0: on the page, in row "Sam Rivera Edit"');
+    expect(two.text).toContain('1: on the page, in row "Lee Chan Edit"');
+  });
+
+  it('picks from a dialog’s dropdown with no name, whose panel is drawn outside the dialog, over it', async () => {
+    await act({ kind: 'click', role: 'button', name: 'Pick groups' });
+    onTestFinished(
+      async () =>
+        void (await h
+          .screen(screen)
+          .screen.page.click('#groups-done')
+          .catch(() => undefined)),
+    );
+    // Behind the dialog: refused, as before (in either words: hidden behind it, or not offered at all).
+    const behind = await act({ kind: 'click', role: 'button', name: 'Check the form' });
+    expect(behind.error).toBe(true);
+    expect(behind.text).toMatch(/behind the open dialog "Site groups"|the dialog "Site groups" is open/);
+    const opened = await act({ kind: 'click', role: 'combobox', name: 'Choose groups' });
+    expect(opened.error, opened.text).toBe(false);
+    expect(opened.text).toContain('found by the text it shows, as it has no name of its own');
+    expect(opened.text).toContain('opened: listbox "Groups" (North, South)');
+    const picked = await act({ kind: 'click', role: 'option', name: 'North' });
+    expect(picked.error, picked.text).toBe(false);
+    expect(picked.text).toContain('Picked North');
+    await act({ kind: 'click', role: 'button', name: 'Done' });
   });
 
   it('drags plain text by a grip beside it, reached with grabOffset', async () => {
