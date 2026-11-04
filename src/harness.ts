@@ -246,7 +246,10 @@ export interface OpenScreenOptions extends Appearance {
 
 export interface Harness<W extends ProductWorld = ProductWorld> {
   readonly product: Product<W>;
-  createWorld(spec?: Partial<WorldSpec>): Promise<WorldEntry<W>>;
+  /** Starts a world; its id is known at once, before it is up. */
+  createWorld(spec?: Partial<WorldSpec>): Promise<WorldEntry<W>> & { readonly id: string };
+  /** Worlds still starting, and ones that failed to start in the last 10 minutes, with why. */
+  startingWorlds(): { id: string; since: string; error?: string }[];
   /** A full rebuild: the same spec on the same port. */
   resetWorld(worldId: string): Promise<WorldEntry<W>>;
   destroyWorld(worldId: string): Promise<void>;
@@ -543,6 +546,7 @@ export function createHarness<W extends ProductWorld>(
   let nextScreen = 1;
   // World creation picks a port and then starts on it; two at once must not pick the same one.
   let creating: Promise<unknown> = Promise.resolve();
+  const starting = new Map<string, { id: string; since: string; error?: string }>();
 
   const getWorld = (id: string): WorldEntry<W> => {
     const w = worlds.get(id);
@@ -973,7 +977,10 @@ export function createHarness<W extends ProductWorld>(
 
     createWorld(partial = {}) {
       if (partial.keep && [...worlds.values()].some((w) => w.spec.keep === partial.keep))
-        return Promise.reject(new HarnessError(`kept world ${partial.keep} is already running here`));
+        return Object.assign(
+          Promise.reject(new HarnessError(`kept world ${partial.keep} is already running here`)),
+          { id: '' },
+        );
       const spec: WorldSpec = {
         tenants: partial.tenants ?? [],
         seed: partial.seed ?? false,
@@ -982,14 +989,25 @@ export function createHarness<W extends ProductWorld>(
         ...(partial.standins?.length ? { standins: partial.standins } : {}),
       };
       const id = `w${nextWorld++}`;
+      const start = { id, since: new Date().toISOString() } as { id: string; since: string; error?: string };
+      starting.set(id, start);
       const run = creating.then(async () => {
         const entry = await startEntry(id, spec);
         worlds.set(id, entry);
         return entry;
       });
+      run.then(
+        () => starting.delete(id),
+        (e: unknown) => {
+          start.error = (e as Error).message;
+          setTimeout(() => starting.delete(id), 10 * 60_000).unref();
+        },
+      );
       creating = run.catch(() => undefined);
-      return run;
+      return Object.assign(run, { id });
     },
+
+    startingWorlds: () => [...starting.values()],
 
     async resetWorld(worldId) {
       const old = getWorld(worldId);
