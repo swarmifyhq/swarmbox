@@ -6,7 +6,8 @@
 //
 // An account's console settings, as the product gives them (account(tenant, settings)): region, the region its
 // requests are signed for ("auto" by default, as R2 and Railway's buckets have it), and corsOrigins, a comma list of
-// origins browsers may upload from to its buckets (by default any of the world's own hosts).
+// origins browsers may upload from to its buckets (by default any of the world's own hosts), and buckets, a comma
+// list of buckets made in the console, there before the product starts.
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -389,9 +390,21 @@ function bodyChecks(
   return { md5, given: one ?? null };
 }
 
+/** Whose bucket this is: whoever made it, or the account whose console settings list it (made on first use). */
+function ownerOf(ctx: StandInContext, bucket: string): string | undefined {
+  const made = buckets.get(bucket);
+  if (made !== undefined) return made;
+  for (const [tenant, settings] of ctx.settings)
+    if ((settings.buckets ?? '').split(',').some((b) => b.trim() === bucket)) {
+      buckets.set(bucket, tenant);
+      return tenant;
+    }
+  return undefined;
+}
+
 /** Whether a browser on `origin` may reach this bucket: its owner's corsOrigins, or the world's own hosts. */
 function allowed(ctx: StandInContext, bucket: string, origin: string): boolean {
-  const owner = buckets.get(bucket);
+  const owner = ownerOf(ctx, bucket);
   if (owner === undefined) return false;
   const listed = (ctx.settings.get(owner)?.corsOrigins ?? '')
     .split(',')
@@ -414,8 +427,8 @@ const corsOf = (ctx: StandInContext, req: StandInRequest): Record<string, string
 };
 
 /** The bucket a request names, if it is the caller's: S3's NoSuchBucket, or AccessDenied for another account's. */
-function ownBucket(req: StandInRequest, tenant: string): Reply | null {
-  const owner = buckets.get(req.params.bucket!);
+function ownBucket(req: StandInRequest, tenant: string, ctx: StandInContext): Reply | null {
+  const owner = ownerOf(ctx, req.params.bucket!);
   if (owner === undefined) return s3err(404, 'NoSuchBucket', 'The specified bucket does not exist');
   if (owner !== tenant) return s3err(403, 'AccessDenied', 'Access Denied');
   return null;
@@ -459,7 +472,7 @@ const routes: Record<string, Route> = {
   'bucket.put': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return v;
-    const owner = buckets.get(req.params.bucket!);
+    const owner = ownerOf(ctx, req.params.bucket!);
     if (owner !== undefined && owner !== v.tenant)
       return s3err(409, 'BucketAlreadyExists', 'The requested bucket name is not available.');
     const where = /<LocationConstraint>([^<]*)<\/LocationConstraint>/.exec(req.text())?.[1];
@@ -476,7 +489,7 @@ const routes: Record<string, Route> = {
   'bucket.head': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return v;
-    const refused = ownBucket(req, v.tenant);
+    const refused = ownBucket(req, v.tenant, ctx);
     return { status: refused ? refused.status : 200 };
   },
   'bucket.get': (req, ctx) => listUploads(req, ctx),
@@ -500,7 +513,7 @@ const routes: Record<string, Route> = {
   'object.put': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return { ...v, headers: { ...v.headers, ...corsOf(ctx, req) } };
-    const refused = ownBucket(req, v.tenant);
+    const refused = ownBucket(req, v.tenant, ctx);
     if (refused) return refused;
     if (ctx.take('reject', { tenant: v.tenant, target: objectKey(req) }))
       return s3err(403, 'AccessDenied', 'Access Denied');
@@ -569,7 +582,7 @@ const routes: Record<string, Route> = {
   'object.head': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return { status: v.status };
-    const refused = ownBucket(req, v.tenant);
+    const refused = ownBucket(req, v.tenant, ctx);
     if (refused) return { status: refused.status };
     const o = objects.get(objectKey(req));
     if (!o) return { status: 404 };
@@ -578,7 +591,7 @@ const routes: Record<string, Route> = {
   'object.get': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return v;
-    const refused = ownBucket(req, v.tenant);
+    const refused = ownBucket(req, v.tenant, ctx);
     if (refused) return refused;
     const uploadId = req.query.get('uploadId');
     if (uploadId) return listParts(uploadId, req);
@@ -603,7 +616,7 @@ const routes: Record<string, Route> = {
   'object.delete': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return v;
-    const refused = ownBucket(req, v.tenant);
+    const refused = ownBucket(req, v.tenant, ctx);
     if (refused) return refused;
     const uploadId = req.query.get('uploadId');
     if (uploadId) {
@@ -622,7 +635,7 @@ const routes: Record<string, Route> = {
   'object.post': (req, ctx) => {
     const v = verify(req, ctx);
     if (isReply(v)) return v;
-    const refused = ownBucket(req, v.tenant);
+    const refused = ownBucket(req, v.tenant, ctx);
     if (refused) return refused;
     const k = objectKey(req);
     if (req.query.has('uploads')) return startUpload(req, k);
@@ -816,10 +829,9 @@ function listParts(uploadId: string, req: StandInRequest): Reply {
 function listUploads(req: StandInRequest, ctx: StandInContext): Reply {
   const v = verify(req, ctx);
   if (isReply(v)) return v;
-  const refused = ownBucket(req, v.tenant);
+  const refused = ownBucket(req, v.tenant, ctx);
   if (refused) return refused;
-  if (!req.query.has('uploads'))
-    return s3err(400, 'InvalidRequest', 'Only the list of uploads in parts is served on a bucket here.');
+  if (!req.query.has('uploads')) return listObjects(req);
   const bucket = req.params.bucket!;
   const prefix = req.query.get('prefix') ?? '';
   const max = Math.min(Number(req.query.get('max-uploads') ?? 1000), 1000);
@@ -847,5 +859,88 @@ function listUploads(req: StandInRequest, ctx: StandInContext): Reply {
         )
         .join('') +
       `</ListMultipartUploadsResult>`,
+  );
+}
+
+/**
+ * ListObjects (V1) and ListObjectsV2 (list-type=2): keys in order, under a prefix, rolled up into CommonPrefixes
+ * at a delimiter, a page at a time (max-keys counts both). V2 pages by an opaque continuation token or start-after,
+ * V1 by marker. A product often lists a record's files before it cleans them up.
+ */
+function listObjects(req: StandInRequest): Reply {
+  const bucket = req.params.bucket!;
+  const q = req.query;
+  const v2 = q.get('list-type') === '2';
+  const prefix = q.get('prefix') ?? '';
+  const delimiter = q.get('delimiter') ?? '';
+  const maxKeys = Math.max(0, Math.min(Number(q.get('max-keys') ?? 1000) || 0, 1000));
+  const token = q.get('continuation-token');
+  let after: string;
+  if (v2 && token !== null) {
+    after = Buffer.from(token, 'base64url').toString('utf8');
+    if (!token || Buffer.from(after, 'utf8').toString('base64url') !== token)
+      return s3err(400, 'InvalidArgument', 'The continuation token provided is incorrect');
+  } else after = (v2 ? q.get('start-after') : q.get('marker')) ?? '';
+  const url = q.get('encoding-type') === 'url';
+  const enc = (k: string) => escapeXml(url ? encodeURIComponent(k).replace(/%2F/g, '/') : k);
+
+  const keys = [...objects.keys()]
+    .filter((k) => k.startsWith(`${bucket}/`))
+    .map((k) => k.slice(bucket.length + 1))
+    .filter((k) => k.startsWith(prefix))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  // Each entry is a key, or the common prefix it rolls up into; one at or before where the last page ended was
+  // given already, and so was a prefix that page ended inside.
+  const entries: { key?: string; prefix?: string }[] = [];
+  for (const k of keys) {
+    const cut = delimiter ? k.indexOf(delimiter, prefix.length) : -1;
+    if (cut < 0) {
+      if (k > after) entries.push({ key: k });
+      continue;
+    }
+    const p = k.slice(0, cut + delimiter.length);
+    if (entries.at(-1)?.prefix !== p && p > after && !after.startsWith(p)) entries.push({ prefix: p });
+  }
+  const page = entries.slice(0, maxKeys);
+  const truncated = entries.length > page.length;
+  const last = page.at(-1);
+  // Where the next page starts, as S3 gives it: the last key, or the last common prefix (all under it are given).
+  const next = last ? (last.prefix ?? last.key!) : '';
+  const tag = (name: string, value: string) => `<${name}>${value}</${name}>`;
+  const body =
+    tag('Name', escapeXml(bucket)) +
+    tag('Prefix', enc(prefix)) +
+    (delimiter ? tag('Delimiter', enc(delimiter)) : '') +
+    tag('MaxKeys', String(maxKeys)) +
+    (url ? tag('EncodingType', 'url') : '') +
+    tag('IsTruncated', String(truncated)) +
+    (v2
+      ? tag('KeyCount', String(page.length)) +
+        (token !== null ? tag('ContinuationToken', escapeXml(token)) : '') +
+        (q.get('start-after') !== null ? tag('StartAfter', enc(q.get('start-after')!)) : '') +
+        (truncated ? tag('NextContinuationToken', Buffer.from(next, 'utf8').toString('base64url')) : '')
+      : tag('Marker', enc(q.get('marker') ?? '')) + (truncated ? tag('NextMarker', enc(next)) : '')) +
+    page
+      .filter((e) => e.key !== undefined)
+      .map((e) => {
+        const o = objects.get(`${bucket}/${e.key}`)!;
+        return (
+          '<Contents>' +
+          tag('Key', enc(e.key!)) +
+          tag('LastModified', o.modified.toISOString()) +
+          tag('ETag', escapeXml(o.etag)) +
+          tag('Size', String(o.size)) +
+          tag('StorageClass', 'STANDARD') +
+          '</Contents>'
+        );
+      })
+      .join('') +
+    page
+      .filter((e) => e.prefix !== undefined)
+      .map((e) => `<CommonPrefixes>${tag('Prefix', enc(e.prefix!))}</CommonPrefixes>`)
+      .join('');
+  return xml(
+    200,
+    `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${body}</ListBucketResult>`,
   );
 }

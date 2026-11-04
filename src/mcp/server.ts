@@ -488,7 +488,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
           .enum(Object.keys(DEVICES) as [Device, ...Device[]])
           .optional()
           .describe(
-            'The device: desktop, phone, tablet (landscape) or tablet-portrait. Default the app’s own (desktop ' +
+            'The device: desktop (1440×900), desktop-hd (1920×1080), desktop-qhd (2560×1440), phone, tablet ' +
+              '(landscape) or tablet-portrait. Default the app’s own (desktop ' +
               'for the main app). A customer’s link on a phone is how most customers open one.',
           ),
         colorScheme: z
@@ -535,13 +536,15 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
     {
       title: 'Act on a screen',
       description:
-        'Do one thing on a screen: click {role, name}, fill {label, text}, select {label, option}, press {key}, ' +
+        'Do one thing on a screen: click {role, name} (button right for a right click, clickCount 2 for a double ' +
+        'click), fill {label, text}, select {label, option}, press {key}, ' +
         'draw {label} (pointer strokes, e.g. a signature pad; strokes default to a signature), drag {role, name} ' +
         'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
-        'of its box: an edge to resize; default its middle; a drop off the screen is scrolled to on the way), ' +
+        'of its box: an edge to resize; default its middle; grabOffset {x, y} px for a handle beside it; a drop ' +
+        'off the screen is scrolled to on the way), ' +
         'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or goto {path} (a ' +
         `path, or a full link on the ${noun}’s host as a text gives it). Elements are found by accessible role and ` +
-        'name, as in screen_read; of several, the one in the open dialog is taken, else each is described for index. ' +
+        'name, as in screen_read, or by role "text" for an element with no role, by its visible text; of several, the one in the open dialog is taken, else each is described for index. ' +
         'Something behind a modal dialog is refused with the dialog’s name. Waits for the requests it started (up ' +
         'to 15 s). Returns what it did, what changed (dialogs, status lines, headings, the address), what the server did (yours, with what it set off, and any failure ' +
         `in the ${noun} since the last action), requests refused, then the screen as it is. Refused while a ` +
@@ -555,6 +558,11 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             name: z.string(),
             exact: z.boolean().optional(),
             index: z.int().optional(),
+            button: z
+              .enum(['left', 'right', 'middle'])
+              .optional()
+              .describe('right for a menu that opens only on a right click. Default left'),
+            clickCount: z.int().min(1).max(3).optional().describe('2 for a double click. Default 1'),
           }),
           z.object({
             kind: z.literal('fill'),
@@ -581,6 +589,13 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               .optional()
               .describe(
                 'Where to hold it, [x, y] as fractions of its box. Default its middle; an edge resizes',
+              ),
+            grabOffset: z
+              .object({ x: z.number().min(-3000).max(3000), y: z.number().min(-3000).max(3000) })
+              .optional()
+              .describe(
+                'CSS pixels added to where it is held: for a move handle beside the element (an icon with no ' +
+                  'name next to a row’s text), which nothing else reaches',
               ),
             to: z
               .object({
