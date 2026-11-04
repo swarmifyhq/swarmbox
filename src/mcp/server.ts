@@ -19,6 +19,7 @@ import { readInbox } from './inbox.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
+import { wallClock } from '../time.ts';
 import { HarnessError, refreshTenants, type Action, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
@@ -187,6 +188,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'A world’s clock',
       description:
         'Read the world’s sandbox time, or move it: jumpMs forward, to an instant, pause or play. Forward only. ' +
+        'It also gives the wall clock in each zone the world’s people are in, with its offset: check a screen’s times ' +
+        'against that. ' +
         'The product follows it, and so does every open screen’s browser, since "today" is decided there. Needs ' +
         'the product’s hooks.',
       inputSchema: {
@@ -213,9 +216,13 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
                   : undefined;
         const st = await h.moveClock(world, move);
         const screensFollowing = h.screens().filter((x) => x.worldId === world && x.clockInstalled).length;
+        // Each zone its people are in, as their screens should show it.
+        const zones = [...new Set((await h.people(world)).map((p) => p.timeZone))];
+        const at = new Date(st.process.at);
         return text(
           `${world}: sandbox time ${st.process.at}${st.clock.frozenAt ? ' (paused)' : ''}; offset ${Math.round(st.clock.offsetMs / 1000)} s` +
-            (move ? `; ${screensFollowing} screens follow it` : ''),
+            (move ? `; ${screensFollowing} screens follow it` : '') +
+            zones.map((z) => `\n  in ${z}: ${wallClock(at, z)}`).join(''),
         );
       }),
   );

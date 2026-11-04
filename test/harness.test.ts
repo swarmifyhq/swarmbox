@@ -541,6 +541,8 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     const before = Date.now();
     const moved = await call('world_clock', { world, jumpMs: 86_400_000 });
     expect(moved.text).toMatch(/screens follow it/);
+    // and the wall clock where its people are, so an agent never works an offset out from memory
+    expect(moved.text).toMatch(/\n  in [\w/]+: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(UTC[+-]\d{2}:\d{2}\)/);
     const s = h.screens().find((x) => x.persona.id === 'north-ana')!;
     const now = await s.screen.page.evaluate(() => Date.now());
     expect(now - before).toBeGreaterThan(86_000_000);
