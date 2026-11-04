@@ -117,7 +117,8 @@ const page = (
 /**
  * What the pointer and layered screens are tested on: a block dragged between lanes by pointer events (a drag
  * starts only once the pointer has moved), radios whose styled labels are drawn over their inputs, and a panel
- * with a scrim and a layer over it, neither saying it is modal, each with a "Change" button.
+ * with a scrim and a layer over it, neither saying it is modal, each with a "Change" button. And plain text with no
+ * role: a tab with a menu only on a right click, and page tabs reordered by a hidden grip beside their text.
  */
 const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
   .lane { position: relative; height: 60px; width: 600px; background: #eee; margin-bottom: 20px; }
@@ -128,6 +129,8 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
   #panel { position: fixed; right: 0; top: 0; width: 180px; background: #fafafa; }
   #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.2); z-index: 1; }
   #layer { position: fixed; left: 200px; top: 300px; z-index: 2; background: #fff; }
+  .tab { display: inline-flex; gap: 4px; padding: 4px 8px; margin-right: 20px; }
+  .grip { display: inline-block; width: 16px; touch-action: none; }
 </style></head><body><main><h1>Board</h1>
 <div class="lane" role="group" aria-label="Lane A"><button type="button" id="block">Visit</button></div>
 <div class="lane" role="group" aria-label="Lane B"></div>
@@ -137,6 +140,8 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
 </fieldset>
 <button type="button" id="open-layer">Open the layer</button>
 <p role="status" id="said"></p>
+<div id="tabs"><div class="tab"><span class="grip" aria-hidden="true">::</span><span>Page one</span></div><div class="tab"><span class="grip" aria-hidden="true">::</span><span>Page two</span></div></div>
+<span id="ctx">Rename me</span><ul role="menu" aria-label="Tab menu" id="menu" hidden><li role="menuitem">Rename</li></ul>
 <div style="height: 1500px"></div>
 <div class="lane" role="group" aria-label="Lane C"></div>
 <div style="height: 400px"></div>
@@ -171,6 +176,23 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
     document.getElementById('scrim').hidden = false;
     document.getElementById('layer').hidden = false;
   };
+  // A page tab moves only by its grip: the text itself does nothing.
+  let held = null;
+  for (const g of document.querySelectorAll('.grip'))
+    g.addEventListener('pointerdown', (e) => { held = g.parentElement; e.preventDefault(); });
+  document.addEventListener('pointerup', (e) => {
+    if (!held) return;
+    const tab = held;
+    held = null;
+    const onto = document.elementsFromPoint(e.clientX, e.clientY).map((n) => n.closest('.tab')).find((n) => n && n !== tab);
+    if (!onto) return said('Tab dropped nowhere');
+    onto.after(tab);
+    said('Order: ' + [...document.querySelectorAll('.tab')].map((n) => n.lastChild.textContent).join(', '));
+  });
+  const ctx = document.getElementById('ctx');
+  ctx.addEventListener('contextmenu', (e) => { e.preventDefault(); document.getElementById('menu').hidden = false; said('Menu for Rename me'); });
+  ctx.addEventListener('click', () => said('Left-clicked Rename me'));
+  ctx.addEventListener('dblclick', () => said('Double-clicked Rename me'));
   document.getElementById('p-change').onclick = () => said('The panel changed it');
   document.getElementById('l-change').onclick = () => said('The layer changed it');
 </script></body></html>`;

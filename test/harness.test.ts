@@ -535,6 +535,12 @@ describe('a world of a product Swarmbox knows nothing about', () => {
       height: 1180,
       dark: false,
     });
+    // A big monitor, for a layout that goes wrong only as the screen grows.
+    expect(await look({ person: 'north-ana', device: 'desktop-qhd' })).toMatchObject({
+      width: 2560,
+      height: 1440,
+      touch: false,
+    });
     const odd = await call('screen_open', { world, person: 'north-ana', device: 'watch' });
     expect(odd.error).toBe(true);
   });
@@ -650,6 +656,45 @@ describe('the pointer, and screens with layers', () => {
     });
     expect(back.text).toContain('Visit in Lane B at 300');
     expect((await act({ kind: 'scroll', role: 'group' })).text).toContain('give both its role and its name');
+  });
+
+  it('right-clicks and double-clicks plain text with no role, found as role "text"', async () => {
+    // exact: the status line says "Menu for Rename me" too.
+    const right = await act({ kind: 'click', role: 'text', name: 'Rename me', exact: true, button: 'right' });
+    expect(right.error, right.text).toBe(false);
+    expect(right.text).toContain('right-clicked text "Rename me"');
+    expect(right.text).toContain('Menu for Rename me');
+    const twice = await act({ kind: 'click', role: 'text', name: 'Rename me', exact: true, clickCount: 2 });
+    expect(twice.text).toContain('double-clicked text "Rename me"');
+    expect(twice.text).toContain('Double-clicked Rename me');
+  });
+
+  it('drags plain text by a grip beside it, reached with grabOffset', async () => {
+    // The grip is 16 px wide, 4 px left of the text: its middle is 12 px left of the text's left edge.
+    const moved = await act({
+      kind: 'drag',
+      role: 'text',
+      name: 'Page one',
+      exact: true,
+      grab: [0, 0.5],
+      grabOffset: { x: -12, y: 0 },
+      to: { role: 'text', name: 'Page two', exact: true },
+    });
+    expect(moved.error, moved.text).toBe(false);
+    expect(moved.text).toContain(
+      'dragged text "Page one" (held at 0, 0.5 -12, 0 px off it) onto text "Page two"',
+    );
+    expect(moved.text).toContain('Order: Page two, Page one');
+    // Held by its text, it doesn't move: why the offset is needed.
+    const text = await act({
+      kind: 'drag',
+      role: 'text',
+      name: 'Page two',
+      exact: true,
+      to: { role: 'text', name: 'Page one', exact: true },
+    });
+    expect(text.error, text.text).toBe(false);
+    expect(text.text).not.toContain('Order: Page one, Page two');
   });
 
   it('clicks a styled radio through the label drawn over it', async () => {

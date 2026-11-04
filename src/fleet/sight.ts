@@ -334,14 +334,20 @@ const EDGE = 8;
  * the page is scrolled to show them both first; otherwise the wheel is turned while the drag is held, and the
  * pointer follows the drop point as it comes into view. Returns how far it scrolled, in CSS pixels (0: not at all).
  */
-export async function drag(page: Page, el: Locator, grab: [number, number], to: DragTo): Promise<number> {
+export async function drag(
+  page: Page,
+  el: Locator,
+  grab: [number, number],
+  to: DragTo,
+  offset: { x: number; y: number } = { x: 0, y: 0 },
+): Promise<number> {
   await el.scrollIntoViewIfNeeded({ timeout: 10_000 });
   const view = page.viewportSize() ?? { width: 1280, height: 800 };
   const scrollY = () => page.evaluate(() => window.scrollY);
   const grabPoint = async () => {
     const box = await el.boundingBox({ timeout: 10_000 });
     if (!box) throw new Error('it has no size on screen');
-    return { x: box.x + grab[0] * box.width, y: box.y + grab[1] * box.height };
+    return { x: box.x + grab[0] * box.width + offset.x, y: box.y + grab[1] * box.height + offset.y };
   };
   // A distance is from where it was first held, in the page: it moves with the page as the page scrolls.
   const held = await grabPoint();

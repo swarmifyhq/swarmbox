@@ -312,7 +312,17 @@ export type PersonInput =
   | { type: 'text'; text: string };
 
 export type Action =
-  | { kind: 'click'; role: string; name: string; exact?: boolean; index?: number }
+  | {
+      kind: 'click';
+      role: string;
+      name: string;
+      exact?: boolean;
+      index?: number;
+      /** A menu that opens only on a right click; default left. */
+      button?: 'left' | 'right' | 'middle';
+      /** 2 for a double click. */
+      clickCount?: number;
+    }
   | { kind: 'fill'; label: string; text: string; exact?: boolean; index?: number }
   | { kind: 'select'; label: string; option: string; exact?: boolean; index?: number }
   | { kind: 'press'; key: string }
@@ -332,6 +342,8 @@ export type Action =
       exact?: boolean;
       index?: number;
       grab?: [number, number];
+      /** CSS pixels added to the grab point: a move handle beside the element, not on it. */
+      grabOffset?: { x: number; y: number };
       to?: { role: string; name: string; exact?: boolean; index?: number; at?: [number, number] };
       by?: { x: number; y: number };
     }
@@ -514,7 +526,9 @@ async function field(
 }
 
 /** Elements by accessible role and name, as screen_read shows them. */
+/** By accessible role and name; role "text" is an element with no role, found by its visible text. */
 function byRole(page: PwPage, role: string, name: string, exact = false): Locator {
+  if (role === 'text') return page.getByText(name, { exact });
   return page.getByRole(role as Parameters<PwPage['getByRole']>[0], { name, exact });
 }
 
@@ -1125,12 +1139,22 @@ export function createHarness<W extends ProductWorld>(
               action.index,
             );
             await reachable(t.el, what);
-            did = `clicked ${action.role} "${action.name}"${t.why ? `, ${t.why}` : ''}`;
-            await t.el.click({ timeout: 10_000 }).catch(async (e: unknown) => {
+            const how = {
+              ...(action.button ? { button: action.button } : {}),
+              ...(action.clickCount ? { clickCount: action.clickCount } : {}),
+            };
+            const verb =
+              action.clickCount === 2
+                ? 'double-clicked'
+                : action.button && action.button !== 'left'
+                  ? `${action.button}-clicked`
+                  : 'clicked';
+            did = `${verb} ${action.role} "${action.name}"${t.why ? `, ${t.why}` : ''}`;
+            await t.el.click({ timeout: 10_000, ...how }).catch(async (e: unknown) => {
               // A styled radio or checkbox: its own label is drawn over it, and clicking that is the same.
               if (!(await coveredByOwnLabel(t.el)))
                 throw new HarnessError(`could not click ${what}: ${whyNotClicked(e)}`);
-              await t.el.click({ timeout: 10_000, force: true });
+              await t.el.click({ timeout: 10_000, force: true, ...how });
               did += ' (through its label, which is drawn over it)';
             });
             break;
@@ -1158,10 +1182,15 @@ export function createHarness<W extends ProductWorld>(
               to = { by: action.by! };
               where = `by ${action.by!.x}, ${action.by!.y} px`;
             }
-            const scrolled = await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
-              throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
-            });
-            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${scrolled ? `, scrolling ${scrolled} px on the way` : ''}${t.why ? `, ${t.why}` : ''}`;
+            const scrolled = await drag(page, t.el, action.grab ?? [0.5, 0.5], to, action.grabOffset).catch(
+              (e: unknown) => {
+                throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
+              },
+            );
+            const offset = action.grabOffset
+              ? ` ${action.grabOffset.x}, ${action.grabOffset.y} px off it`
+              : '';
+            did = `dragged ${action.role} "${action.name}"${action.grab || offset ? ` (held at ${(action.grab ?? [0.5, 0.5]).join(', ')}${offset})` : ''} ${where}${scrolled ? `, scrolling ${scrolled} px on the way` : ''}${t.why ? `, ${t.why}` : ''}`;
             break;
           }
           case 'scroll': {
