@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.15.0 (2026-11-04)
+
 - `run_start` answers within 45 seconds, before an MCP client gives up on the call (60 s by default,
   `claude -p` included). A world still starting gets the run's id and "still starting"; `run_status` with
   that `run` waits for it and then gives the cast, what to try and what good looks like. Calling
