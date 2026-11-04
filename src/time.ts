@@ -39,6 +39,25 @@ export function localDate(at: Date, timeZone: string): string {
   }).format(at);
 }
 
+/**
+ * The wall clock in a zone at an instant, with its offset: "2026-11-04 09:30 (UTC-07:00)". An agent reading a
+ * screen's times checks them against this, not against an offset it remembers (B.C. stopped changing its clocks
+ * in 2026; an agent that knew the old rule called every correct time an hour wrong).
+ */
+export function wallClock(at: Date, timeZone: string): string {
+  const off = Math.round(offsetAt(at.getTime(), timeZone) / 60_000);
+  const hm = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  const sign = off < 0 ? '-' : '+';
+  const abs = Math.abs(off);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${localDate(at, timeZone)} ${hm.format(at)} (UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)})`;
+}
+
 /** The instant a wall-clock time on a date is in a zone. A time a change skips is read on the later side. */
 export function zonedInstant(date: string, time: string, timeZone: string): Date {
   const [y, m, d] = date.split('-').map(Number) as [number, number, number];
