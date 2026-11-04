@@ -190,6 +190,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         'Read the world’s sandbox time, or move it: jumpMs forward, to an instant, pause or play. Forward only. ' +
         'It also gives the wall clock in each zone the world’s people are in, with its offset: check a screen’s times ' +
         'against that. ' +
+        'Moving the clock doesn’t make the product’s work go faster: a long job (an import, a sync) still takes real ' +
+        'time, so wait for it on the screen rather than jumping past it. ' +
         'The product follows it, and so does every open screen’s browser, since "today" is decided there. Needs ' +
         'the product’s hooks.',
       inputSchema: {
