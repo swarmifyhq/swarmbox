@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHarness, type Harness } from '../src/harness.ts';
+import { parseKey, totp } from '../src/mcp/authenticator.ts';
 import { guard, serveMcp, type McpHttp } from '../src/mcp/server.ts';
 import { StandInError } from '../src/standins/runner.ts';
 import { saveScenario } from '../src/scenarios/spec.ts';
@@ -342,6 +343,36 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(inbox.text).toContain('Your estimate');
   });
 
+  it('finds a sign-in code the product sent as itself, in the shop’s inbox, marked as the platform’s', async () => {
+    const port = h.world(world).world.port;
+    await new Promise<void>((done, fail) =>
+      http
+        .request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'POST',
+            path: '/api/code',
+            headers: { host: `north.sample.test:${port}` },
+          },
+          (res) => res.resume().on('end', done),
+        )
+        .on('error', fail)
+        .end('ann@example.test'),
+    );
+    // No tenant given: the world's first, north, and the platform's mailbox beside it.
+    const inbox = await call('phone_inbox', { world, to: 'ann@example.test' });
+    expect(inbox.error).toBe(false);
+    expect(inbox.text).toContain('1 items');
+    expect(inbox.text).toContain('"sentAs":"the platform"');
+    expect(inbox.text).toContain('"subject":"Your sign-in code: 482913"');
+    // Read on from its next: nothing new in either mailbox.
+    const next = /next (\S+);/.exec(inbox.text)![1]!;
+    expect((await call('phone_inbox', { world, to: 'ann@example.test', after: next })).text).toContain(
+      '0 items',
+    );
+  });
+
   it('reads the world’s own log, narrowed by text', async () => {
     const all = await call('world_log', { world, lines: 2 });
     expect(all.text.split('\n')).toHaveLength(2);
@@ -445,6 +476,36 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(h.world(world).world.requests).toContain('north GET /p/north/e/abc');
   });
 
+  it('reaches a shop made during the run, by the product’s own sign-up', async () => {
+    const port = h.world(world).world.port;
+    await new Promise<void>((done, fail) =>
+      http
+        .request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'POST',
+            path: '/api/signup',
+            headers: { host: `north.sample.test:${port}` },
+          },
+          (res) => res.resume().on('end', done),
+        )
+        .on('error', fail)
+        .end('harbour'),
+    );
+    const link = await call('screen_open', { world, link: 'http://harbour.sample.test/p/harbour/e/abc' });
+    expect(link.error).toBe(false);
+    expect(link.text).toContain('Your estimate');
+    expect((await call('world_list')).text).toContain(`harbour: http://harbour.sample.test:${port}`);
+    expect((await call('persona_list', { world })).text).toContain('harbour-ana  harbour  Ana (owner)');
+    const owner = await call('screen_open', { world, person: 'harbour-ana' });
+    expect(owner.error).toBe(false);
+    expect(h.world(world).world.requests).toContain('harbour GET /p/harbour/e/abc');
+    // A shop nobody made is still refused, once the product has been asked.
+    const none = await call('screen_open', { world, link: 'http://nowhere.sample.test/p/x' });
+    expect(none.text).toContain('this world has no shop nowhere');
+  });
+
   it('opens a screen as a phone or a turned tablet, light or dark', async () => {
     const look = async (args: Record<string, unknown>) => {
       const opened = await call('screen_open', { world, ...args });
@@ -481,6 +542,8 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     const before = Date.now();
     const moved = await call('world_clock', { world, jumpMs: 86_400_000 });
     expect(moved.text).toMatch(/screens follow it/);
+    // and the wall clock where its people are, so an agent never works an offset out from memory
+    expect(moved.text).toMatch(/\n {2}in [\w/]+: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(UTC[+-]\d{2}:\d{2}\)/);
     const s = h.screens().find((x) => x.persona.id === 'north-ana')!;
     const now = await s.screen.page.evaluate(() => Date.now());
     expect(now - before).toBeGreaterThan(86_000_000);
@@ -492,6 +555,21 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     const page = h.screen(/^screen (s\d+)/.exec(later.text)![1]!).screen.page;
     const started = await page.evaluate(() => (window as unknown as { startedAt: number }).startedAt);
     expect(started - before).toBeGreaterThan(86_000_000);
+  });
+
+  it('gives the authenticator code at the world’s time, a day ahead of this machine', async () => {
+    const key = 'GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ';
+    const got = await call('phone_authenticator', { world, key });
+    expect(got.text).toMatch(/^\d{6} \(for \d+ s more; then \d{6}\)$/);
+    const at = Date.parse((await h.moveClock(world)).process.at);
+    // the world's step, or the one before if a step ended between the two reads
+    expect([totp(parseKey(key), at).code, totp(parseKey(key), at - 30_000).code]).toContain(
+      got.text.slice(0, 6),
+    );
+    expect(at - Date.now()).toBeGreaterThan(86_000_000);
+    const bad = await call('phone_authenticator', { world, key: 'not a key: 0189 !!!!' });
+    expect(bad.error).toBe(true);
+    expect(bad.text).toMatch(/base32/);
   });
 
   it('runs the product’s checks', async () => {

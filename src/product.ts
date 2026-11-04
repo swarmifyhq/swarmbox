@@ -99,6 +99,12 @@ export interface ProductWorld {
   /** The port the product serves the tenants' hosts on. */
   port: number;
   tenants: string[];
+  /**
+   * The tenants as they stand now, for a product where one can be made during a run (its own sign-up). Asked when
+   * a link names a tenant `tenants` doesn't have, or people are listed; the answer becomes `tenants`. Without it a
+   * tenant made during a run can't be reached by link. people() should list the new tenant's people too.
+   */
+  currentTenants?(): Promise<string[]>;
   /** `http://<tenant>.<baseDomain>:<port>`. */
   origin(tenant: string): string;
   /** The product code it runs: a finding is only as good as the commit it names. */
@@ -198,6 +204,12 @@ export interface Product<W extends ProductWorld = ProductWorld> {
   standins?: StandInSource[];
   /** Tenants' hosts are `<tenant>.<baseDomain>`, known before a world starts: needed for stand-ins. */
   baseDomain?: string;
+  /**
+   * Where the product files the mail it sends as itself, not as a tenant (sign-in codes, invites, sign-up
+   * confirmations): the tenant key its messages hook takes for it, e.g. "_platform". phone_inbox reads it beside
+   * the tenant's own, so a code sent this way isn't missed.
+   */
+  platformMailbox?: string;
   /**
    * Origins outside the world the product's pages load from (web fonts, maps). Giving them contains the world's
    * browsers (see `contain`): they reach only the world's own hosts, its stand-ins and these; the rest is blocked.
