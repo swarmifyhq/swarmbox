@@ -117,7 +117,8 @@ const page = (
 /**
  * What the pointer and layered screens are tested on: a block dragged between lanes by pointer events (a drag
  * starts only once the pointer has moved), radios whose styled labels are drawn over their inputs, and a panel
- * with a scrim and a layer over it, neither saying it is modal, each with a "Change" button.
+ * with a scrim and a layer over it, neither saying it is modal, each with a "Change" button. And plain text with no
+ * role: a tab with a menu only on a right click, and page tabs reordered by a hidden grip beside their text.
  */
 const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
   .lane { position: relative; height: 60px; width: 600px; background: #eee; margin-bottom: 20px; }
@@ -128,6 +129,12 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
   #panel { position: fixed; right: 0; top: 0; width: 180px; background: #fafafa; }
   #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.2); z-index: 1; }
   #layer { position: fixed; left: 200px; top: 300px; z-index: 2; background: #fff; }
+  .tab { display: inline-flex; gap: 4px; padding: 4px 8px; margin-right: 20px; }
+  .grip { display: inline-block; width: 16px; touch-action: none; }
+  #groups-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.3); z-index: 5; }
+  #groups { position: fixed; left: 40px; top: 80px; width: 300px; height: 200px; background: #fff; z-index: 6; }
+  #dd { border: 1px solid #333; padding: 4px; }
+  #groups-list { position: fixed; left: 50px; top: 140px; width: 200px; background: #fff; z-index: 7; margin: 0; }
 </style></head><body><main><h1>Board</h1>
 <div class="lane" role="group" aria-label="Lane A"><button type="button" id="block">Visit</button></div>
 <div class="lane" role="group" aria-label="Lane B"></div>
@@ -137,12 +144,19 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
 </fieldset>
 <button type="button" id="open-layer">Open the layer</button>
 <p role="status" id="said"></p>
+<div id="tabs"><div class="tab"><span class="grip" aria-hidden="true">::</span><span>Page one</span></div><div class="tab"><span class="grip" aria-hidden="true">::</span><span>Page two</span></div></div>
+<button type="button" id="check">Check the form</button><p id="invalid"></p>
+<button type="button" id="open-groups">Pick groups</button>
+<ul><li>Sam Rivera <button type="button">Edit</button></li><li>Lee Chan <button type="button">Edit</button></li></ul>
+<span id="ctx">Rename me</span><ul role="menu" aria-label="Tab menu" id="menu" hidden><li role="menuitem">Rename</li></ul>
 <div style="height: 1500px"></div>
 <div class="lane" role="group" aria-label="Lane C"></div>
 <div style="height: 400px"></div>
 <div class="lane" role="group" aria-label="Lane D"></div></main>
 <section id="panel" role="dialog" aria-label="The panel"><button type="button" id="p-change">Change</button></section>
 <div id="scrim" hidden></div>
+<div id="groups-scrim" hidden></div>
+<section id="groups" role="dialog" aria-label="Site groups" hidden><div role="combobox" tabindex="0" id="dd">Choose groups</div><button type="button" id="groups-done">Done</button></section>
 <section id="layer" role="dialog" aria-label="Change it" hidden><button type="button" id="l-change">Change</button></section>
 <script>
   const said = (t) => (document.getElementById('said').textContent = t);
@@ -171,6 +185,56 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
     document.getElementById('scrim').hidden = false;
     document.getElementById('layer').hidden = false;
   };
+  // A page tab moves only by its grip: the text itself does nothing.
+  let held = null;
+  for (const g of document.querySelectorAll('.grip'))
+    g.addEventListener('pointerdown', (e) => { held = g.parentElement; e.preventDefault(); });
+  document.addEventListener('pointerup', (e) => {
+    if (!held) return;
+    const tab = held;
+    held = null;
+    const onto = document.elementsFromPoint(e.clientX, e.clientY).map((n) => n.closest('.tab')).find((n) => n && n !== tab);
+    if (!onto) return said('Tab dropped nowhere');
+    // Silently, as a tab bar does: only the order on screen says it moved.
+    onto.after(tab);
+  });
+  // Inline validation as many forms show it: plain text, in no live region.
+  document.getElementById('check').onclick = () => (document.getElementById('invalid').textContent = 'A selection is mandatory');
+  // A dialog's dropdown as PrimeNG and other portal libraries draw it: no name of its own, only the text it
+  // shows, and its panel added at the end of the page, outside the dialog, drawn over it.
+  const groups = document.getElementById('groups');
+  document.getElementById('open-groups').onclick = () => {
+    groups.hidden = false;
+    groups.setAttribute('aria-modal', 'true');
+    document.getElementById('groups-scrim').hidden = false;
+  };
+  document.getElementById('groups-done').onclick = () => {
+    groups.hidden = true;
+    groups.removeAttribute('aria-modal');
+    document.getElementById('groups-scrim').hidden = true;
+  };
+  document.getElementById('dd').onclick = () => {
+    const list = document.createElement('ul');
+    list.id = 'groups-list';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', 'Groups');
+    for (const g of ['North', 'South']) {
+      const o = document.createElement('li');
+      o.setAttribute('role', 'option');
+      o.textContent = g;
+      o.onclick = () => {
+        list.remove();
+        document.getElementById('dd').textContent = g;
+        said('Picked ' + g);
+      };
+      list.append(o);
+    }
+    document.body.append(list);
+  };
+  const ctx = document.getElementById('ctx');
+  ctx.addEventListener('contextmenu', (e) => { e.preventDefault(); document.getElementById('menu').hidden = false; });
+  ctx.addEventListener('click', () => said('Left-clicked Rename me'));
+  ctx.addEventListener('dblclick', () => said('Double-clicked Rename me'));
   document.getElementById('p-change').onclick = () => said('The panel changed it');
   document.getElementById('l-change').onclick = () => said('The layer changed it');
 </script></body></html>`;
@@ -475,8 +539,9 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     scenarioDir: dirs.scenarioDir,
     home: dirs.home,
     apps: ['tech'],
-    startWorld: (spec, port) =>
-      startSample(
+    startWorld: async (spec, port) => {
+      await new Promise((r) => setTimeout(r, Number(spec.options?.startDelayMs ?? 0)));
+      return startSample(
         spec.tenants.length ? spec.tenants : ['demo-shop'],
         port,
         (spec.options?.closed as string[] | undefined) ?? [],
@@ -486,7 +551,8 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         Number(spec.options?.clockAheadMs ?? 0),
         spec.options?.clockBroken === true,
         spec.options?.noFeed === true,
-      ),
+      );
+    },
     baseDomain: BASE_DOMAIN,
     platformMailbox: PLATFORM,
     // Only in a world that asks for it, so the other tests start no stand-in.
@@ -506,6 +572,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     worldOptions: {
       closed: z.array(z.string()).optional().describe('Shops closed for the season'),
       failStop: z.boolean().optional().describe('Its stop fails, as a product that won’t shut down cleanly'),
+      startDelayMs: z.number().optional().describe('Waits this long before starting, as a slow product does'),
     },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };

@@ -246,7 +246,10 @@ export interface OpenScreenOptions extends Appearance {
 
 export interface Harness<W extends ProductWorld = ProductWorld> {
   readonly product: Product<W>;
-  createWorld(spec?: Partial<WorldSpec>): Promise<WorldEntry<W>>;
+  /** Starts a world; its id is known at once, before it is up. */
+  createWorld(spec?: Partial<WorldSpec>): Promise<WorldEntry<W>> & { readonly id: string };
+  /** Worlds still starting, and ones that failed to start in the last 10 minutes, with why. */
+  startingWorlds(): { id: string; since: string; error?: string }[];
   /** A full rebuild: the same spec on the same port. */
   resetWorld(worldId: string): Promise<WorldEntry<W>>;
   destroyWorld(worldId: string): Promise<void>;
@@ -309,7 +312,17 @@ export type PersonInput =
   | { type: 'text'; text: string };
 
 export type Action =
-  | { kind: 'click'; role: string; name: string; exact?: boolean; index?: number }
+  | {
+      kind: 'click';
+      role: string;
+      name: string;
+      exact?: boolean;
+      index?: number;
+      /** A menu that opens only on a right click; default left. */
+      button?: 'left' | 'right' | 'middle';
+      /** 2 for a double click. */
+      clickCount?: number;
+    }
   | { kind: 'fill'; label: string; text: string; exact?: boolean; index?: number }
   | { kind: 'select'; label: string; option: string; exact?: boolean; index?: number }
   | { kind: 'press'; key: string }
@@ -329,6 +342,8 @@ export type Action =
       exact?: boolean;
       index?: number;
       grab?: [number, number];
+      /** CSS pixels added to the grab point: a move handle beside the element, not on it. */
+      grabOffset?: { x: number; y: number };
       to?: { role: string; name: string; exact?: boolean; index?: number; at?: [number, number] };
       by?: { x: number; y: number };
     }
@@ -511,8 +526,34 @@ async function field(
 }
 
 /** Elements by accessible role and name, as screen_read shows them. */
+/** By accessible role and name; role "text" is an element with no role, found by its visible text. */
 function byRole(page: PwPage, role: string, name: string, exact = false): Locator {
+  if (role === 'text') return page.getByText(name, { exact });
   return page.getByRole(role as Parameters<PwPage['getByRole']>[0], { name, exact });
+}
+
+/**
+ * A dropdown with no accessible name (a styled one, showing "Choose groups"), found as a person finds it: by
+ * its label, its placeholder, or the text it shows. Null when none of those match one either.
+ */
+async function unnamedControl(
+  page: PwPage,
+  role: string,
+  name: string,
+  exact = false,
+): Promise<{ el: Locator; how: string } | null> {
+  if (!['combobox', 'listbox', 'button'].includes(role)) return null;
+  const shown = exact ? new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`) : name;
+  const tries: [Locator, string][] = [
+    [page.getByLabel(name, { exact }), 'by its label'],
+    [page.getByPlaceholder(name, { exact }), 'by its placeholder'],
+    [
+      page.getByRole(role as Parameters<PwPage['getByRole']>[0]).filter({ hasText: shown, visible: true }),
+      'by the text it shows',
+    ],
+  ];
+  for (const [el, how] of tries) if ((await el.count()) === 1) return { el, how };
+  return null;
 }
 
 /** Whether a world's clock stands anywhere but on this machine's: moved, or paused. */
@@ -543,6 +584,7 @@ export function createHarness<W extends ProductWorld>(
   let nextScreen = 1;
   // World creation picks a port and then starts on it; two at once must not pick the same one.
   let creating: Promise<unknown> = Promise.resolve();
+  const starting = new Map<string, { id: string; since: string; error?: string }>();
 
   const getWorld = (id: string): WorldEntry<W> => {
     const w = worlds.get(id);
@@ -973,7 +1015,10 @@ export function createHarness<W extends ProductWorld>(
 
     createWorld(partial = {}) {
       if (partial.keep && [...worlds.values()].some((w) => w.spec.keep === partial.keep))
-        return Promise.reject(new HarnessError(`kept world ${partial.keep} is already running here`));
+        return Object.assign(
+          Promise.reject(new HarnessError(`kept world ${partial.keep} is already running here`)),
+          { id: '' },
+        );
       const spec: WorldSpec = {
         tenants: partial.tenants ?? [],
         seed: partial.seed ?? false,
@@ -982,14 +1027,25 @@ export function createHarness<W extends ProductWorld>(
         ...(partial.standins?.length ? { standins: partial.standins } : {}),
       };
       const id = `w${nextWorld++}`;
+      const start = { id, since: new Date().toISOString() } as { id: string; since: string; error?: string };
+      starting.set(id, start);
       const run = creating.then(async () => {
         const entry = await startEntry(id, spec);
         worlds.set(id, entry);
         return entry;
       });
+      run.then(
+        () => starting.delete(id),
+        (e: unknown) => {
+          start.error = (e as Error).message;
+          setTimeout(() => starting.delete(id), 10 * 60_000).unref();
+        },
+      );
       creating = run.catch(() => undefined);
-      return run;
+      return Object.assign(run, { id });
     },
+
+    startingWorlds: () => [...starting.values()],
 
     async resetWorld(worldId) {
       const old = getWorld(worldId);
@@ -1100,19 +1156,31 @@ export function createHarness<W extends ProductWorld>(
         switch (action.kind) {
           case 'click': {
             const what = `role=${action.role} name="${action.name}"`;
-            const t = await target(
-              s,
-              byRole(page, action.role, action.name, action.exact),
-              what,
-              action.index,
-            );
+            const named = byRole(page, action.role, action.name, action.exact);
+            const other =
+              (await named.count()) === 0
+                ? await unnamedControl(page, action.role, action.name, action.exact)
+                : null;
+            const t = other
+              ? { el: other.el, why: `found ${other.how}, as it has no name of its own` }
+              : await target(s, named, what, action.index);
             await reachable(t.el, what);
-            did = `clicked ${action.role} "${action.name}"${t.why ? `, ${t.why}` : ''}`;
-            await t.el.click({ timeout: 10_000 }).catch(async (e: unknown) => {
+            const how = {
+              ...(action.button ? { button: action.button } : {}),
+              ...(action.clickCount ? { clickCount: action.clickCount } : {}),
+            };
+            const verb =
+              action.clickCount === 2
+                ? 'double-clicked'
+                : action.button && action.button !== 'left'
+                  ? `${action.button}-clicked`
+                  : 'clicked';
+            did = `${verb} ${action.role} "${action.name}"${t.why ? `, ${t.why}` : ''}`;
+            await t.el.click({ timeout: 10_000, ...how }).catch(async (e: unknown) => {
               // A styled radio or checkbox: its own label is drawn over it, and clicking that is the same.
               if (!(await coveredByOwnLabel(t.el)))
                 throw new HarnessError(`could not click ${what}: ${whyNotClicked(e)}`);
-              await t.el.click({ timeout: 10_000, force: true });
+              await t.el.click({ timeout: 10_000, force: true, ...how });
               did += ' (through its label, which is drawn over it)';
             });
             break;
@@ -1140,10 +1208,15 @@ export function createHarness<W extends ProductWorld>(
               to = { by: action.by! };
               where = `by ${action.by!.x}, ${action.by!.y} px`;
             }
-            const scrolled = await drag(page, t.el, action.grab ?? [0.5, 0.5], to).catch((e: unknown) => {
-              throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
-            });
-            did = `dragged ${action.role} "${action.name}"${action.grab ? ` (held at ${action.grab.join(', ')})` : ''} ${where}${scrolled ? `, scrolling ${scrolled} px on the way` : ''}${t.why ? `, ${t.why}` : ''}`;
+            const scrolled = await drag(page, t.el, action.grab ?? [0.5, 0.5], to, action.grabOffset).catch(
+              (e: unknown) => {
+                throw new HarnessError(`could not drag ${what}: ${(e as Error).message}`);
+              },
+            );
+            const offset = action.grabOffset
+              ? ` ${action.grabOffset.x}, ${action.grabOffset.y} px off it`
+              : '';
+            did = `dragged ${action.role} "${action.name}"${action.grab || offset ? ` (held at ${(action.grab ?? [0.5, 0.5]).join(', ')}${offset})` : ''} ${where}${scrolled ? `, scrolling ${scrolled} px on the way` : ''}${t.why ? `, ${t.why}` : ''}`;
             break;
           }
           case 'scroll': {

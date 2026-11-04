@@ -199,6 +199,9 @@ export function insideWorld(url: string, options: FleetOptions): boolean {
  */
 export const DEVICES = {
   desktop: { viewport: { width: 1440, height: 900 } },
+  // Big monitors, for layouts that go wrong only as the screen grows.
+  'desktop-hd': { viewport: { width: 1920, height: 1080 } },
+  'desktop-qhd': { viewport: { width: 2560, height: 1440 } },
   phone: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 },
   tablet: { viewport: { width: 1180, height: 820 }, hasTouch: true, deviceScaleFactor: 2 },
   'tablet-portrait': { viewport: { width: 820, height: 1180 }, hasTouch: true, deviceScaleFactor: 2 },

@@ -24,10 +24,21 @@ import { wallClock } from '../time.ts';
 import { HarnessError, refreshTenants, type Action, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
-import { createRuns, type Runs } from '../runs/run.ts';
+import { createRuns, type RunRecord, type Runs, type StartingRun } from '../runs/run.ts';
 import { listScenarios, loadScenario, saveScenario, Scenario } from '../scenarios/spec.ts';
 
 const text = (t: string): CallToolResult => ({ content: [{ type: 'text', text: t }] });
+
+/** What the promise gives within ms, or undefined if it's still going; its failure within ms is thrown. */
+export async function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((r) => (timer = setTimeout(() => r(undefined), ms)));
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** A refusal or a failure the agent can read and act on, never a thrown protocol error. */
 export async function guard(fn: () => Promise<CallToolResult>): Promise<CallToolResult> {
@@ -80,7 +91,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       description:
         `Start a world: a running copy of ${product.name} with its own data and the ${noun}s given (default ` +
         'one), started the way it is deployed, with stand-ins for the outside services the product names. ' +
-        'world_list says whether its browsers are contained. Seed adds demo data and takes longer.',
+        'world_list says whether its browsers are contained. Seed adds demo data and takes longer. A world can ' +
+        'take minutes to start: if it is still starting, the answer gives its id and world_list shows it when it is up.',
       inputSchema: {
         tenants: z
           .array(z.string().regex(/^[a-z][a-z0-9-]{1,38}[a-z0-9]$/))
@@ -116,13 +128,19 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
     },
     async ({ tenants, seed, keep, options, standins }) =>
       guard(async () => {
-        const w = await h.createWorld({
+        const starting = h.createWorld({
           ...(tenants ? { tenants } : {}),
           ...(seed === undefined ? {} : { seed }),
           ...(keep ? { keep } : {}),
           ...(options ? { options: options as Record<string, unknown> } : {}),
           ...(standins?.length ? { standins } : {}),
         });
+        // Answered before the client gives up on the call, as run_start is.
+        const w = await within(starting, runs.startWaitMs);
+        if (!w)
+          return text(
+            `world ${starting.id} is still starting. Don't create another: world_list shows it when it's up.`,
+          );
         return text(describeWorld(h, w.id));
       }),
   );
@@ -157,18 +175,22 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
     'world_list',
     {
       title: 'List worlds',
-      description: `The worlds running now, their ${noun}s' addresses and open screens.`,
+      description: `The worlds running now, their ${noun}s' addresses and open screens, and the ones starting.`,
       annotations: { readOnlyHint: true },
     },
     async () =>
       guard(async () => {
         // A tenant made during a run (the product's own sign-up) is listed with the rest.
         await Promise.all(h.worlds().map((w) => refreshTenants(w)));
+        const starting = h
+          .startingWorlds()
+          .map((s) =>
+            s.error
+              ? `${s.id}: didn't start: ${s.error.split('\n')[0]}`
+              : `${s.id}: starting, ${Math.round((Date.now() - Date.parse(s.since)) / 1000)} s so far`,
+          );
         return text(
-          h
-            .worlds()
-            .map((w) => describeWorld(h, w.id))
-            .join('\n\n') || 'no worlds running',
+          [...h.worlds().map((w) => describeWorld(h, w.id)), ...starting].join('\n\n') || 'no worlds running',
         );
       }),
   );
@@ -466,7 +488,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
           .enum(Object.keys(DEVICES) as [Device, ...Device[]])
           .optional()
           .describe(
-            'The device: desktop, phone, tablet (landscape) or tablet-portrait. Default the app’s own (desktop ' +
+            'The device: desktop (1440×900), desktop-hd (1920×1080), desktop-qhd (2560×1440), phone, tablet ' +
+              '(landscape) or tablet-portrait. Default the app’s own (desktop ' +
               'for the main app). A customer’s link on a phone is how most customers open one.',
           ),
         colorScheme: z
@@ -513,13 +536,15 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
     {
       title: 'Act on a screen',
       description:
-        'Do one thing on a screen: click {role, name}, fill {label, text}, select {label, option}, press {key}, ' +
+        'Do one thing on a screen: click {role, name} (button right for a right click, clickCount 2 for a double ' +
+        'click), fill {label, text}, select {label, option}, press {key}, ' +
         'draw {label} (pointer strokes, e.g. a signature pad; strokes default to a signature), drag {role, name} ' +
         'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
-        'of its box: an edge to resize; default its middle; a drop off the screen is scrolled to on the way), ' +
+        'of its box: an edge to resize; default its middle; grabOffset {x, y} px for a handle beside it; a drop ' +
+        'off the screen is scrolled to on the way), ' +
         'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or goto {path} (a ' +
         `path, or a full link on the ${noun}’s host as a text gives it). Elements are found by accessible role and ` +
-        'name, as in screen_read; of several, the one in the open dialog is taken, else each is described for index. ' +
+        'name, as in screen_read, or by role "text" for an element with no role, by its visible text; of several, the one in the open dialog is taken, else each is described for index. ' +
         'Something behind a modal dialog is refused with the dialog’s name. Waits for the requests it started (up ' +
         'to 15 s). Returns what it did, what changed (dialogs, status lines, headings, the address), what the server did (yours, with what it set off, and any failure ' +
         `in the ${noun} since the last action), requests refused, then the screen as it is. Refused while a ` +
@@ -533,6 +558,11 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             name: z.string(),
             exact: z.boolean().optional(),
             index: z.int().optional(),
+            button: z
+              .enum(['left', 'right', 'middle'])
+              .optional()
+              .describe('right for a menu that opens only on a right click. Default left'),
+            clickCount: z.int().min(1).max(3).optional().describe('2 for a double click. Default 1'),
           }),
           z.object({
             kind: z.literal('fill'),
@@ -559,6 +589,13 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               .optional()
               .describe(
                 'Where to hold it, [x, y] as fractions of its box. Default its middle; an edge resizes',
+              ),
+            grabOffset: z
+              .object({ x: z.number().min(-3000).max(3000), y: z.number().min(-3000).max(3000) })
+              .optional()
+              .describe(
+                'CSS pixels added to where it is held: for a move handle beside the element (an icon with no ' +
+                  'name next to a row’s text), which nothing else reaches',
               ),
             to: z
               .object({
@@ -734,6 +771,42 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       ),
   );
 
+  /** What a player needs to play a started run: its cast, what to try and what good looks like. */
+  const brief = (r: RunRecord) => {
+    const s = r.scenario;
+    return [
+      `run ${r.id} on ${r.worldId} (${s.budgetMinutes} minutes)`,
+      `  ${r.provenance}`,
+      `goal: ${s.goal}`,
+      'cast:',
+      ...r.cast.map((c) => `  ${c.screen}: ${c.persona.label}${c.part ? `, ${c.part}` : ''}`),
+      'try:',
+      ...s.try.map((t, i) => `  ${i + 1}. ${t}`),
+      'good looks like:',
+      ...s.expect.map((t) => `  - ${t}`),
+      ...(s.conditions.length
+        ? ['conditions (apply with screen_network):', ...s.conditions.map((t) => `  - ${t}`)]
+        : []),
+    ].join('\n');
+  };
+  // A start answers within runs.startWaitMs, before the client gives up on the call: a client that gave up
+  // and called run_start again used to get a second world, and nobody ended the first.
+  const collect = async (s: StartingRun) => {
+    const r = await within(s.ready, runs.startWaitMs).catch((e: unknown) => {
+      runs.taken(s.id);
+      throw e;
+    });
+    if (!r) {
+      const secs = Math.round((Date.now() - Date.parse(s.since)) / 1000);
+      return text(
+        `run ${s.id} is still starting its world (${secs} s so far). Don't start it again: call run_status ` +
+          `with run "${s.id}", which waits for it and then gives its cast, what to try and what good looks like.`,
+      );
+    }
+    runs.taken(s.id);
+    return text(brief(r));
+  };
+
   server.registerTool(
     'run_start',
     {
@@ -741,30 +814,13 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       description:
         'Play a scenario: makes its world, puts its cast on screens and starts recording each (a Playwright trace). ' +
         'Then do what the scenario says on the screens, log anything that is not what good looks like with ' +
-        'finding_log, and finish with run_end, which runs every check and writes the report. Refused past the daily budget.',
+        'finding_log, and finish with run_end, which runs every check and writes the report. A world can take ' +
+        'minutes to start: if it is still starting, the answer gives the run id, and run_status with that run ' +
+        'waits for it. Calling run_start again for the same scenario gives back the same start. Refused past ' +
+        'the daily budget.',
       inputSchema: { scenario: z.string() },
     },
-    async ({ scenario }) =>
-      guard(async () => {
-        const r = await runs.start(scenario);
-        const s = r.scenario;
-        return text(
-          [
-            `run ${r.id} on ${r.worldId} (${s.budgetMinutes} minutes)`,
-            `  ${r.provenance}`,
-            `goal: ${s.goal}`,
-            'cast:',
-            ...r.cast.map((c) => `  ${c.screen}: ${c.persona.label}${c.part ? `, ${c.part}` : ''}`),
-            'try:',
-            ...s.try.map((t, i) => `  ${i + 1}. ${t}`),
-            'good looks like:',
-            ...s.expect.map((t) => `  - ${t}`),
-            ...(s.conditions.length
-              ? ['conditions (apply with screen_network):', ...s.conditions.map((t) => `  - ${t}`)]
-              : []),
-          ].join('\n'),
-        );
-      }),
+    async ({ scenario }) => guard(() => collect(runs.begin(scenario))),
   );
 
   server.registerTool(
@@ -850,13 +906,21 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
     'run_status',
     {
       title: 'Runs and budget',
-      description: 'The runs in progress, how long each has run against its budget, and today’s budget.',
+      description:
+        'The runs in progress and starting, how long each has run against its budget, and today’s budget. With ' +
+        'run, that run: one still starting is waited for, then given as run_start gives it.',
+      inputSchema: { run: z.string().optional() },
       annotations: { readOnlyHint: true },
     },
-    async () =>
+    async ({ run }) =>
       guard(async () => {
+        if (run) {
+          const s = runs.starting().find((x) => x.id === run);
+          return s ? collect(s) : text(brief(runs.get(run)));
+        }
         const b = runs.budget.today();
         const l = runs.budget.limits;
+        const live = new Set(h.worlds().map((w) => w.id));
         return text(
           [
             `today: ${b.runs}/${l.runs} runs, ${b.browserMinutes}/${l.browserMinutes} browser-minutes`,
@@ -864,7 +928,16 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               .active()
               .map(
                 (r) =>
-                  `${r.id}: ${Math.round((Date.now() - Date.parse(r.startedAt)) / 60_000)}/${r.scenario.budgetMinutes} min, ${r.findings.length} findings, screens ${r.cast.map((c) => c.screen).join(' ')}`,
+                  `${r.id}: ${Math.round((Date.now() - Date.parse(r.startedAt)) / 60_000)}/${r.scenario.budgetMinutes} min, ${r.findings.length} findings, screens ${r.cast.map((c) => c.screen).join(' ')}` +
+                  (live.has(r.worldId) ? '' : ` (its world ${r.worldId} has stopped: end it with run_end)`),
+              ),
+            ...runs
+              .starting()
+              .filter((s) => !runs.active().some((r) => r.id === s.id))
+              .map((s) =>
+                s.error
+                  ? `${s.id}: didn't start: ${s.error.split('\n')[0]}`
+                  : `${s.id}: starting its world, ${Math.round((Date.now() - Date.parse(s.since)) / 1000)} s so far`,
               ),
           ].join('\n'),
         );

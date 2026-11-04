@@ -10,8 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { createHarness, type Harness } from '../src/harness.ts';
+import { createRuns } from '../src/runs/run.ts';
 import { parseKey, totp } from '../src/mcp/authenticator.ts';
 import { guard, serveMcp, type McpHttp } from '../src/mcp/server.ts';
 import { StandInError } from '../src/standins/runner.ts';
@@ -534,6 +535,12 @@ describe('a world of a product Swarmbox knows nothing about', () => {
       height: 1180,
       dark: false,
     });
+    // A big monitor, for a layout that goes wrong only as the screen grows.
+    expect(await look({ person: 'north-ana', device: 'desktop-qhd' })).toMatchObject({
+      width: 2560,
+      height: 1440,
+      touch: false,
+    });
     const odd = await call('screen_open', { world, person: 'north-ana', device: 'watch' });
     expect(odd.error).toBe(true);
   });
@@ -649,6 +656,81 @@ describe('the pointer, and screens with layers', () => {
     });
     expect(back.text).toContain('Visit in Lane B at 300');
     expect((await act({ kind: 'scroll', role: 'group' })).text).toContain('give both its role and its name');
+  });
+
+  it('right-clicks and double-clicks plain text with no role, found as role "text"', async () => {
+    // exact: "Double-clicked Rename me" is on the page too, after the first test run of this.
+    const right = await act({ kind: 'click', role: 'text', name: 'Rename me', exact: true, button: 'right' });
+    expect(right.error, right.text).toBe(false);
+    expect(right.text).toContain('right-clicked text "Rename me"');
+    // Nothing says so but the menu itself.
+    expect(right.text).toContain('opened: menu "Tab menu" (Rename)');
+    const twice = await act({ kind: 'click', role: 'text', name: 'Rename me', exact: true, clickCount: 2 });
+    expect(twice.text).toContain('double-clicked text "Rename me"');
+    expect(twice.text).toContain('Double-clicked Rename me');
+  });
+
+  it('says what text came, when no status line or heading does', async () => {
+    const checked = await act({ kind: 'click', role: 'button', name: 'Check the form' });
+    expect(checked.text).toContain('changed: new text: "A selection is mandatory"');
+  });
+
+  it('says where each of several alike is, to pick one by', async () => {
+    const two = await act({ kind: 'click', role: 'button', name: 'Edit' });
+    expect(two.error).toBe(true);
+    expect(two.text).toContain('0: on the page, in row "Sam Rivera Edit"');
+    expect(two.text).toContain('1: on the page, in row "Lee Chan Edit"');
+  });
+
+  it('picks from a dialog’s dropdown with no name, whose panel is drawn outside the dialog, over it', async () => {
+    await act({ kind: 'click', role: 'button', name: 'Pick groups' });
+    onTestFinished(
+      async () =>
+        void (await h
+          .screen(screen)
+          .screen.page.click('#groups-done')
+          .catch(() => undefined)),
+    );
+    // Behind the dialog: refused, as before (in either words: hidden behind it, or not offered at all).
+    const behind = await act({ kind: 'click', role: 'button', name: 'Check the form' });
+    expect(behind.error).toBe(true);
+    expect(behind.text).toMatch(/behind the open dialog "Site groups"|the dialog "Site groups" is open/);
+    const opened = await act({ kind: 'click', role: 'combobox', name: 'Choose groups' });
+    expect(opened.error, opened.text).toBe(false);
+    expect(opened.text).toContain('found by the text it shows, as it has no name of its own');
+    expect(opened.text).toContain('opened: listbox "Groups" (North, South)');
+    const picked = await act({ kind: 'click', role: 'option', name: 'North' });
+    expect(picked.error, picked.text).toBe(false);
+    expect(picked.text).toContain('Picked North');
+    await act({ kind: 'click', role: 'button', name: 'Done' });
+  });
+
+  it('drags plain text by a grip beside it, reached with grabOffset', async () => {
+    // The grip is 16 px wide, 4 px left of the text: its middle is 12 px left of the text's left edge.
+    const moved = await act({
+      kind: 'drag',
+      role: 'text',
+      name: 'Page one',
+      exact: true,
+      grab: [0, 0.5],
+      grabOffset: { x: -12, y: 0 },
+      to: { role: 'text', name: 'Page two', exact: true },
+    });
+    expect(moved.error, moved.text).toBe(false);
+    expect(moved.text).toContain(
+      'dragged text "Page one" (held at 0, 0.5 -12, 0 px off it) onto text "Page two"',
+    );
+    expect(moved.text).toMatch(/changed: the same text in a new order, from "[^"]*Page two/);
+    // Held by its text, it doesn't move: why the offset is needed.
+    const text = await act({
+      kind: 'drag',
+      role: 'text',
+      name: 'Page two',
+      exact: true,
+      to: { role: 'text', name: 'Page one', exact: true },
+    });
+    expect(text.error, text.text).toBe(false);
+    expect(text.text).toContain('changed: nothing a person would notice');
   });
 
   it('clicks a styled radio through the label drawn over it', async () => {
@@ -849,5 +931,80 @@ describe('a run of a scenario', () => {
     expect(html).toContain('The text never arrives');
     expect(existsSync(join(report, '..', 'findings', '1.png'))).toBe(true);
     expect(h.worlds()).toHaveLength(0);
+  });
+});
+
+describe('a run whose world takes longer than a client waits', () => {
+  // A second server on the same harness whose starts answer after 1 ms, as if every world took minutes.
+  let slow: McpHttp;
+  let impatient: Client;
+  const ask = async (name: string, args: Record<string, unknown> = {}) => {
+    const r = (await impatient.callTool({ name, arguments: args })) as {
+      isError?: boolean;
+      content: { text?: string }[];
+    };
+    return { text: r.content.map((c) => c.text ?? '').join('\n'), error: r.isError === true };
+  };
+  beforeAll(async () => {
+    slow = await serveMcp(h, 0, createRuns(h, { env: { ...process.env, SWARMBOX_START_WAIT_MS: '1' } }));
+    impatient = new Client({ name: 'impatient', version: '0' });
+    await impatient.connect(new StreamableHTTPClientTransport(new URL(slow.url)));
+  });
+  afterAll(async () => {
+    await impatient.close();
+    await slow.close();
+  });
+
+  it('answers with the run’s id, gives the same start to a retry, and hands it over through run_status', async () => {
+    const worlds = () => h.startingWorlds().length + h.worlds().length;
+    const before = worlds();
+    const first = await ask('run_start', { scenario: 'send-an-estimate' });
+    expect(first.error, first.text).toBe(false);
+    const run = /^run (\S+) is still starting/.exec(first.text)![1]!;
+    expect(first.text).toContain(`run_status with run "${run}"`);
+    // The client gave up and asked again: the same run, no second world.
+    const again = await ask('run_start', { scenario: 'send-an-estimate' });
+    expect(again.text).toContain(`run ${run}`);
+    expect(worlds()).toBe(before + 1);
+    expect((await ask('run_status')).text).toMatch(new RegExp(`${run}: starting its world`));
+
+    let brief = '';
+    for (let i = 0; i < 600 && !brief; i++) {
+      const s = await ask('run_status', { run });
+      expect(s.error, s.text).toBe(false);
+      if (s.text.includes('cast:')) brief = s.text;
+      else await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(brief).toMatch(/s\d+: Ana \(owner\), the office/);
+    expect(brief).toContain('try:');
+
+    // Its world stops before the run is ended: run_status says so, and run_end still closes it.
+    const world = /^run \S+ on (w\d+)/.exec(brief)![1]!;
+    expect((await ask('world_destroy', { world })).error).toBe(false);
+    expect((await ask('run_status')).text).toContain(`its world ${world} has stopped: end it with run_end`);
+    const ended = await ask('run_end', { run });
+    expect(ended.error, ended.text).toBe(false);
+    expect(ended.text).toMatch(/0 failing checks/);
+    const report = /report: (\S+)/.exec(ended.text)![1]!;
+    expect(readFileSync(report, 'utf8')).toContain(`world ${world} had already stopped, so no checks ran`);
+    expect((await ask('run_status')).text).not.toContain(run);
+  });
+
+  it('answers world_create with the world’s id while it starts, and world_list shows it starting', async () => {
+    const made = await ask('world_create', { tenants: ['late'], options: { startDelayMs: 1500 } });
+    expect(made.text).toMatch(/^world w\d+ is still starting/);
+    const world = /^world (w\d+) is still starting/.exec(made.text)![1]!;
+    expect((await ask('world_list')).text).toMatch(new RegExp(`${world}: starting, \\d+ s so far`));
+    for (let i = 0; i < 600 && !h.worlds().some((w) => w.id === world); i++)
+      await new Promise((r) => setTimeout(r, 100));
+    expect((await ask('world_list')).text).toContain(`${world} (port `);
+    expect((await ask('world_destroy', { world })).error).toBe(false);
+
+    // In the harness itself: listed as starting, with its id, from the moment it's asked for.
+    const early = h.createWorld({ tenants: ['early'] });
+    expect(h.startingWorlds().map((x) => x.id)).toContain(early.id);
+    await early;
+    expect(h.startingWorlds().map((x) => x.id)).not.toContain(early.id);
+    await h.destroyWorld(early.id);
   });
 });

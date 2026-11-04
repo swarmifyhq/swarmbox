@@ -112,6 +112,7 @@ export function renderReport(r: RunRecord): string {
   }
 
   <h2>Checks on the data (${checks.length})</h2>
+  ${r.worldGone ? `<p class="o-fail">${esc(r.worldGone)}.</p>` : ''}
   ${unsettled.length ? `<p class="o-fail">The worker had not caught up in ${unsettled.map(([k]) => esc(k)).join(', ')} when the checks ran.</p>` : ''}
   <div class="table-wrap"><table><thead><tr><th>Check</th><th>Where</th><th>Result</th><th>Looked at</th></tr></thead><tbody>
   ${[...checks]

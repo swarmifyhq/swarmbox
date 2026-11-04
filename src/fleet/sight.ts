@@ -104,7 +104,18 @@ export interface Glance {
   said: string[];
   /** Visible top headings (h1, h2): a view that swaps in place (a "You signed it" page) shows here. */
   headings: string[];
+  /** Menus, listboxes and tooltips showing: a context menu, a dropdown's panel. */
+  overlays: string[];
+  /**
+   * The page's visible text by line, outside dialogs and overlays (those are said by name): an inline form
+   * appearing, a total updating, a validation message, rows reordered.
+   */
+  text: string[];
 }
+
+const OVERLAYS = '[role="menu"], [role="listbox"], [role="tooltip"]';
+/** How many lines of text a change names, each way. */
+const TEXT_SHOWN = 3;
 
 const HEADINGS = 'h1, h2, [role="heading"][aria-level="1"], [role="heading"][aria-level="2"]';
 
@@ -117,7 +128,7 @@ export async function glance(page: Page): Promise<Glance> {
       })
       .map((e) => ((e as HTMLElement).innerText ?? e.textContent ?? '').replace(/\s+/g, ' ').trim())
       .filter((t) => t.length > 0);
-  const [info, said, headings] = await Promise.all([
+  const [info, said, headings, overlays, text] = await Promise.all([
     page.locator(DIALOGS).evaluateAll(describeDialogs),
     page.locator(LIVE).evaluateAll((els) =>
       els
@@ -130,13 +141,65 @@ export async function glance(page: Page): Promise<Glance> {
         .filter((t) => t.length > 0),
     ),
     page.locator(HEADINGS).evaluateAll(visibleText),
+    page.locator(OVERLAYS).evaluateAll((els) =>
+      els
+        .filter((e) => {
+          const b = e.getBoundingClientRect();
+          return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden';
+        })
+        .map((e) => {
+          const items = [...e.querySelectorAll('[role="menuitem"], [role="option"]')]
+            .slice(0, 4)
+            .map((i) => (i.textContent ?? '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+          const name =
+            e.getAttribute('aria-label') || (e.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          return `${e.getAttribute('role')} "${name}"${items.length ? ` (${items.join(', ')})` : ''}`;
+        }),
+    ),
+    page.evaluate(
+      ({ inside, max }) => {
+        const lines = (t: string) =>
+          t
+            .split('\n')
+            .map((l) => l.replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+        const all = lines(document.body?.innerText ?? '');
+        // Take out what dialogs and overlays hold, line for line: they are named on their own.
+        const held = new Map<string, number>();
+        for (const el of document.querySelectorAll(inside))
+          for (const l of lines((el as HTMLElement).innerText ?? '')) held.set(l, (held.get(l) ?? 0) + 1);
+        const out: string[] = [];
+        for (const l of all) {
+          const n = held.get(l);
+          if (n) held.set(l, n - 1);
+          else out.push(l.length > 200 ? `${l.slice(0, 200)}…` : l);
+        }
+        return out.slice(0, max);
+      },
+      { inside: `${DIALOGS}, ${OVERLAYS}`, max: 3000 },
+    ),
   ]);
   return {
     url: page.url(),
     dialogs: info.filter((d) => d.visible).map((d) => (d.modal ? `${d.title} (modal)` : d.title)),
     said: [...new Set(said)].map((t) => (t.length > 200 ? `${t.slice(0, 200)}…` : t)),
     headings: [...new Set(headings)].map((t) => (t.length > 120 ? `${t.slice(0, 120)}…` : t)),
+    overlays: [...new Set(overlays)],
+    text,
   };
+}
+
+/** What a has that b hasn't, counting repeats: a line twice before and once now is one gone. */
+function missing(a: string[], b: string[]): string[] {
+  const left = new Map<string, number>();
+  for (const x of b) left.set(x, (left.get(x) ?? 0) + 1);
+  return a.filter((x) => {
+    const n = left.get(x);
+    if (!n) return true;
+    left.set(x, n - 1);
+    return false;
+  });
 }
 
 /** Lines saying what moved between two glances; empty when nothing a person would notice did. */
@@ -153,7 +216,37 @@ export function changes(before: Glance, after: Glance): string[] {
   const went = gone(before.headings, after.headings).filter((h) => !inDialog(h));
   for (const h of came.slice(0, 3)) lines.push(`heading: "${h}"`);
   for (const h of went.slice(0, 3)) lines.push(`heading gone: "${h}"`);
+  for (const o of gone(after.overlays, before.overlays)) lines.push(`opened: ${o}`);
+  for (const o of gone(before.overlays, after.overlays)) lines.push(`closed: ${o}`);
   if (before.url !== after.url) lines.push(`address: ${pathOf(before.url)} → ${pathOf(after.url)}`);
+  // The rest of the page's text, unless a line above already says it. Not after a new address: a new page
+  // changes all of it, and the address says so.
+  if (before.url === after.url) {
+    const said = [...before.said, ...after.said, ...before.headings, ...after.headings];
+    const fresh = (l: string) => !said.some((t) => t.includes(l));
+    const added = missing(after.text, before.text).filter(fresh);
+    const removed = missing(before.text, after.text).filter(fresh);
+    const more = (all: string[]) => (all.length > TEXT_SHOWN ? ` (and ${all.length - TEXT_SHOWN} more)` : '');
+    if (added.length)
+      lines.push(
+        `new text: ${added
+          .slice(0, TEXT_SHOWN)
+          .map((t) => `"${t}"`)
+          .join(', ')}${more(added)}`,
+      );
+    if (removed.length)
+      lines.push(
+        `text gone: ${removed
+          .slice(0, TEXT_SHOWN)
+          .map((t) => `"${t}"`)
+          .join(', ')}${more(removed)}`,
+      );
+    const same = !missing(after.text, before.text).length && !missing(before.text, after.text).length;
+    if (same) {
+      const at = after.text.findIndex((l, i) => l !== before.text[i]);
+      if (at >= 0) lines.push(`the same text in a new order, from "${after.text[at]}"`);
+    }
+  }
   return lines;
 }
 
@@ -195,11 +288,23 @@ export async function pickAmong(
         // such as the scrim a non-modal layer puts over the page behind it.
         const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
         const label = hit?.closest('label');
+        const onTop = Boolean(hit && (el.contains(hit) || label?.contains(el) || label?.control === el));
+        // Where it is, for telling matches apart: the row it's in, else the nearest heading above it.
+        const text = (n: Element) => (n.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        const row = el.closest('tr, [role="row"], li, [role="listitem"]');
+        let under = '';
+        for (let a = el.parentElement; a && !under; a = a.parentElement) {
+          const h = a.querySelector('h1, h2, h3, h4, [role="heading"], legend');
+          if (h && !h.contains(el)) under = text(h);
+        }
         return {
           dialog: d ? name(d) : null,
-          inFront: Boolean(front?.contains(el)),
+          // A dropdown's panel is often put at the end of the page, outside the dialog that opened it, and
+          // drawn over it: what a pointer lands on is in front, wherever it sits in the page.
+          inFront: Boolean(front?.contains(el)) || (front !== null && onTop),
           visible: b.width > 0 && b.height > 0,
-          onTop: Boolean(hit && (el.contains(hit) || label?.contains(el) || label?.control === el)),
+          onTop,
+          where: row && row !== el && text(row) ? `in row "${text(row)}"` : under ? `under "${under}"` : '',
         };
       }),
     };
@@ -221,7 +326,7 @@ export async function pickAmong(
     index: null,
     described: each.map(
       (m) =>
-        `${m.i}: ${m.dialog ? `in "${m.dialog}"` : 'on the page'}${m.visible ? '' : ', hidden'}` +
+        `${m.i}: ${m.dialog ? `in "${m.dialog}"` : 'on the page'}${m.where ? `, ${m.where}` : ''}${m.visible ? '' : ', hidden'}` +
         `${top !== null && !m.inFront ? `, behind the dialog "${top}"` : ''}` +
         `${m.visible && !m.onTop ? ', covered' : ''}`,
     ),
@@ -240,6 +345,10 @@ export async function behindModal(el: Locator): Promise<string | null> {
       );
       const front = modals.filter((m) => !modals.some((o) => o !== m && m.contains(o))).at(-1);
       if (!front || front.contains(e)) return null;
+      // An overlay the dialog opened (a dropdown's panel at the end of the page) is drawn over it: reachable.
+      const b = e.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      if (b.width > 0 && b.height > 0 && hit && e.contains(hit)) return null;
       return name(front) || 'a dialog';
     })
     .catch(() => null);
@@ -334,14 +443,20 @@ const EDGE = 8;
  * the page is scrolled to show them both first; otherwise the wheel is turned while the drag is held, and the
  * pointer follows the drop point as it comes into view. Returns how far it scrolled, in CSS pixels (0: not at all).
  */
-export async function drag(page: Page, el: Locator, grab: [number, number], to: DragTo): Promise<number> {
+export async function drag(
+  page: Page,
+  el: Locator,
+  grab: [number, number],
+  to: DragTo,
+  offset: { x: number; y: number } = { x: 0, y: 0 },
+): Promise<number> {
   await el.scrollIntoViewIfNeeded({ timeout: 10_000 });
   const view = page.viewportSize() ?? { width: 1280, height: 800 };
   const scrollY = () => page.evaluate(() => window.scrollY);
   const grabPoint = async () => {
     const box = await el.boundingBox({ timeout: 10_000 });
     if (!box) throw new Error('it has no size on screen');
-    return { x: box.x + grab[0] * box.width, y: box.y + grab[1] * box.height };
+    return { x: box.x + grab[0] * box.width + offset.x, y: box.y + grab[1] * box.height + offset.y };
   };
   // A distance is from where it was first held, in the page: it moves with the page as the page scrolls.
   const held = await grabPoint();

@@ -242,7 +242,12 @@ describe('the email stand-in', () => {
     ).toBe(sha);
 
     // The link is the key: a changed signature is refused, and so is a link an hour of the world's time old.
-    expect((await fetch(one.download_url.replace(/signature=./, 'signature=0'))).status).toBe(403);
+    // Its first character changed for certain: one that was already 0 stays a good link.
+    const forged = one.download_url.replace(
+      /signature=(.)/,
+      (_: string, c: string) => `signature=${c === '0' ? '1' : '0'}`,
+    );
+    expect((await fetch(forged)).status).toBe(403);
     email.setClock({ at: new Date(WORLD_NOW + 61 * 60_000).toISOString(), paused: true });
     expect((await fetch(one.download_url)).status).toBe(403);
     email.setClock({ at: new Date(WORLD_NOW).toISOString(), paused: true });

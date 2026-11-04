@@ -1,0 +1,75 @@
+# Changelog
+
+What each release changes for a product that uses Swarmbox. Newest first. A change lands under
+Unreleased; the release names the version.
+
+## Unreleased
+
+## 0.15.0 (2026-11-04)
+
+- `run_start` answers within 45 seconds, before an MCP client gives up on the call (60 s by default,
+  `claude -p` included). A world still starting gets the run's id and "still starting"; `run_status` with
+  that `run` waits for it and then gives the cast, what to try and what good looks like. Calling
+  `run_start` again for a scenario whose start no client has taken gives back the same start, not a
+  second world nobody ends. `SWARMBOX_START_WAIT_MS` changes the wait. (Reported by Certainty.)
+- `world_create` answers within the same time, with the world's id; `world_list` shows worlds still
+  starting, and ones that failed to start in the last 10 minutes with why.
+- `run_end` closes a run whose world has already stopped: the report says no checks could run, and
+  `run_status` marks such a run. It used to answer "there is no world" and stay in progress until the
+  serve restarted. (Reported by Certainty.)
+- `Harness.createWorld` returns the world's id with its promise, and `Harness.startingWorlds()` lists the
+  ones starting.
+- This changelog, in the package.
+- `screen_act` click takes `button` (`right` for a menu that opens only on a right click, or `middle`)
+  and `clickCount` (2 for a double click). (Reported by Certainty.)
+- Role `"text"` finds an element with no role by its visible text, wherever a role and name are taken:
+  click, drag and its `to`, and scroll. (Reported by Certainty.)
+- `drag` takes `grabOffset {x, y}`, CSS pixels added to where it is held, for a move handle beside the
+  element (an icon with no name next to a row's text). (Reported by Certainty.)
+- An overlay a dialog opened (a dropdown's panel, which PrimeNG, Radix and others put at the end of the
+  page, outside the dialog) counts as in front when it is drawn over the dialog: its options can be
+  clicked, not refused as "behind the open dialog". (Reported by Certainty.)
+- A dropdown with no accessible name is found by its label, its placeholder, or the text it shows
+  ("Choose groups"). (Reported by Certainty.)
+- Of several matches alike, each is described by the row it's in or the heading above it, so one can be
+  picked by index. (Reported by Certainty.)
+- An action's readout says more of what changed: a menu, listbox or tooltip that opened or closed, new
+  text and text gone (an inline form, a total, a validation message in no live region), and the same text
+  in a new order (a drag that reorders). "Nothing a person would notice" now means it. (Reported by
+  Certainty and Quarry View.)
+- The S3 stand-in lists a bucket's keys: ListObjects V1 and V2, with prefix, delimiter and common
+  prefixes, max-keys and paging. It used to answer 400 to a bucket list. An account's `buckets` setting
+  makes buckets that are there before the product starts. (Reported by Certainty.)
+- Devices `desktop-hd` (1920×1080) and `desktop-qhd` (2560×1440), for layouts that go wrong only on a big
+  monitor. (Reported by Certainty.)
+
+## 0.14.0 (2026-11-04)
+
+- `phone_inbox` also shows what a product sends as itself rather than as a tenant (sign-in codes,
+  invites, sign-up confirmations), marked sentAs "the platform", when the product names its
+  `platformMailbox`.
+- A tenant made during a run (the product's own sign-up) is reachable by its links and its people, when
+  the product gives `currentTenants()`.
+- `world_clock` gives the wall clock and UTC offset in each zone the world's people are in, and says
+  that moving the clock doesn't make the product's own background work finish sooner.
+- `phone_authenticator`: the code an authenticator app shows for a two-step setup key or otpauth link
+  (RFC 6238; SHA1, SHA256, SHA512; 6–8 digits), at the world's time.
+
+## 0.13.0 (2026-11-02)
+
+- A world's browsers are contained whenever the product names what its pages load from outside;
+  `world_list` says whether they are.
+- `screen_requests`: a screen's own requests (method, path, query, status, a bounded body), with secrets
+  redacted, and refusals that say why.
+- `screen_act` scroll, and drags onto a point below the fold or by a distance that scrolls first.
+- An action's readout waits for the requests it started, and names new headings.
+- A path given to `screen_open` or `goto` must stay on the screen's own host: `//host` and `/\host` are
+  refused.
+- The stand-in log keeps no passwords, tokens or keys.
+- The email stand-in keeps attachments whole, lists sent emails as Resend's `GET /emails` does, and
+  downloads any filename; a refused email keeps no files.
+- A stand-in account asked for again keeps its credentials and changes only its settings.
+- A product's hooks can serve a clock and no feed.
+- Ctrl-C stops every world before anything exits, with a screen open too.
+
+Earlier releases have no notes here; their commits are in the repository's history.

@@ -31,6 +31,7 @@ see how a product plugs in, and what the browser tests run against.
 - `pnpm run check` and the tests pass locally before you push.
 - Formatting is Prettier's (`pnpm exec prettier --write .`); lint is ESLint with typescript-eslint.
 - Keep comments to why, not what. Plain words in tool descriptions: an agent reads them.
+- Say what changes for a product under Unreleased in `CHANGELOG.md`.
 - Bump the version in `package.json` when the change is something a product would install for.
 
 ## Reporting a bug
