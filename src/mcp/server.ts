@@ -15,10 +15,12 @@ import { z } from 'zod';
 import { failing, formatReport } from '../checks.ts';
 import { DEVICES, type Device } from '../fleet/browser.ts';
 import { registerDeviceTools } from './device.ts';
+import { readInbox } from './inbox.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
-import { HarnessError, type Action, type Harness } from '../harness.ts';
+import { wallClock } from '../time.ts';
+import { HarnessError, refreshTenants, type Action, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
 import { createRuns, type Runs } from '../runs/run.ts';
@@ -158,14 +160,16 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       annotations: { readOnlyHint: true },
     },
     async () =>
-      guard(async () =>
-        text(
+      guard(async () => {
+        // A tenant made during a run (the product's own sign-up) is listed with the rest.
+        await Promise.all(h.worlds().map((w) => refreshTenants(w)));
+        return text(
           h
             .worlds()
             .map((w) => describeWorld(h, w.id))
             .join('\n\n') || 'no worlds running',
-        ),
-      ),
+        );
+      }),
   );
 
   const hooksOf = (world: string) => h.hooks(world);
@@ -184,6 +188,10 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'A world’s clock',
       description:
         'Read the world’s sandbox time, or move it: jumpMs forward, to an instant, pause or play. Forward only. ' +
+        'It also gives the wall clock in each zone the world’s people are in, with its offset: check a screen’s times ' +
+        'against that. ' +
+        'Moving the clock doesn’t make the product’s work go faster: a long job (an import, a sync) still takes real ' +
+        'time, so wait for it on the screen rather than jumping past it. ' +
         'The product follows it, and so does every open screen’s browser, since "today" is decided there. Needs ' +
         'the product’s hooks.',
       inputSchema: {
@@ -210,9 +218,13 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
                   : undefined;
         const st = await h.moveClock(world, move);
         const screensFollowing = h.screens().filter((x) => x.worldId === world && x.clockInstalled).length;
+        // Each zone its people are in, as their screens should show it.
+        const zones = [...new Set((await h.people(world)).map((p) => p.timeZone))];
+        const at = new Date(st.process.at);
         return text(
           `${world}: sandbox time ${st.process.at}${st.clock.frozenAt ? ' (paused)' : ''}; offset ${Math.round(st.clock.offsetMs / 1000)} s` +
-            (move ? `; ${screensFollowing} screens follow it` : ''),
+            (move ? `; ${screensFollowing} screens follow it` : '') +
+            zones.map((z) => `\n  in ${z}: ${wallClock(at, z)}`).join(''),
         );
       }),
   );
@@ -254,19 +266,26 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'A phone’s or inbox’s messages',
       description:
         `Every text and email between the ${noun} and one number or address, as the fakes delivered them: ` +
-        'the phone a customer holds. Needs the product’s hooks.',
+        'the phone a customer holds. ' +
+        (product.platformMailbox
+          ? `With them, what ${product.name} sent that person as itself, not as a ${noun} (sign-in codes, invites, ` +
+            'sign-up confirmations), marked sentAs "the platform". '
+          : '') +
+        'Needs the product’s hooks.',
       inputSchema: {
         world: z.string(),
-        tenant: z.string(),
+        tenant: z.string().optional().describe(`Which ${noun}; default the world’s first`),
         to: z.string().min(3).describe('Whose: a phone number (+1555…) or an email address'),
-        after: z.string().optional(),
+        after: z.string().optional().describe('The `next` of an earlier read: only what came since'),
       },
       annotations: { readOnlyHint: true },
     },
     async ({ world, tenant, to, after }) =>
       guard(async () => {
         const hooks = await hooksOf(world);
-        return text(feedText((await hooks.messages(tenant, to, after ? { after } : {})) as never));
+        const t = tenant ?? h.world(world).world.tenants[0]!;
+        const page = await readInbox(hooks, t, to, after, product.platformMailbox);
+        return text([feedText(page as never), ...(page.note ? [page.note] : [])].join('\n'));
       }),
   );
 

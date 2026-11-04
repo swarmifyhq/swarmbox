@@ -2,7 +2,7 @@
 // permanent daylight time) and machines carry different tzdata, so a fixed offset is only true on one of them.
 
 import { describe, expect, it } from 'vitest';
-import { startInstant, zonedInstant } from '../../src/time.ts';
+import { startInstant, wallClock, zonedInstant } from '../../src/time.ts';
 
 const ZONES = [
   'America/Vancouver',
@@ -81,5 +81,26 @@ describe('when a world starts', () => {
     expect(shows(startInstant('2030-03-04 08:30', zone, now), zone)).toBe('2030-03-04 08:30');
     expect(() => startInstant('2030-03-01 09:00', zone, now)).toThrow(/before the world's now/);
     expect(() => startInstant('9am', zone, now)).toThrow(/HH:MM/);
+  });
+});
+
+describe('wallClock', () => {
+  const at = new Date('2026-11-04T16:30:00Z');
+
+  it('gives the date, time and offset in the zone', () => {
+    expect(wallClock(at, 'UTC')).toBe('2026-11-04 16:30 (UTC+00:00)');
+    expect(wallClock(at, 'Asia/Kolkata')).toBe('2026-11-04 22:00 (UTC+05:30)');
+  });
+
+  it('agrees with Intl in each zone, whatever its rules are on this machine', () => {
+    for (const zone of ZONES) {
+      const hm = new Intl.DateTimeFormat('en-GB', {
+        timeZone: zone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      });
+      expect(wallClock(at, zone)).toContain(` ${hm.format(at)} (UTC`);
+    }
   });
 });
