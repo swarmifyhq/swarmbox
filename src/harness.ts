@@ -532,6 +532,30 @@ function byRole(page: PwPage, role: string, name: string, exact = false): Locato
   return page.getByRole(role as Parameters<PwPage['getByRole']>[0], { name, exact });
 }
 
+/**
+ * A dropdown with no accessible name (a styled one, showing "Choose groups"), found as a person finds it: by
+ * its label, its placeholder, or the text it shows. Null when none of those match one either.
+ */
+async function unnamedControl(
+  page: PwPage,
+  role: string,
+  name: string,
+  exact = false,
+): Promise<{ el: Locator; how: string } | null> {
+  if (!['combobox', 'listbox', 'button'].includes(role)) return null;
+  const shown = exact ? new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`) : name;
+  const tries: [Locator, string][] = [
+    [page.getByLabel(name, { exact }), 'by its label'],
+    [page.getByPlaceholder(name, { exact }), 'by its placeholder'],
+    [
+      page.getByRole(role as Parameters<PwPage['getByRole']>[0]).filter({ hasText: shown, visible: true }),
+      'by the text it shows',
+    ],
+  ];
+  for (const [el, how] of tries) if ((await el.count()) === 1) return { el, how };
+  return null;
+}
+
 /** Whether a world's clock stands anywhere but on this machine's: moved, or paused. */
 export function clockMoved(state: ClockState): boolean {
   return state.clock.offsetMs !== 0 || state.clock.frozenAt !== null;
@@ -1132,12 +1156,14 @@ export function createHarness<W extends ProductWorld>(
         switch (action.kind) {
           case 'click': {
             const what = `role=${action.role} name="${action.name}"`;
-            const t = await target(
-              s,
-              byRole(page, action.role, action.name, action.exact),
-              what,
-              action.index,
-            );
+            const named = byRole(page, action.role, action.name, action.exact);
+            const other =
+              (await named.count()) === 0
+                ? await unnamedControl(page, action.role, action.name, action.exact)
+                : null;
+            const t = other
+              ? { el: other.el, why: `found ${other.how}, as it has no name of its own` }
+              : await target(s, named, what, action.index);
             await reachable(t.el, what);
             const how = {
               ...(action.button ? { button: action.button } : {}),
