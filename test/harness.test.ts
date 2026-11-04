@@ -991,13 +991,10 @@ describe('a run whose world takes longer than a client waits', () => {
   });
 
   it('answers world_create with the world’s id while it starts, and world_list shows it starting', async () => {
-    const made = await ask('world_create', { tenants: ['late'] });
+    const made = await ask('world_create', { tenants: ['late'], options: { startDelayMs: 1500 } });
     expect(made.text).toMatch(/^world w\d+ is still starting/);
     const world = /^world (w\d+) is still starting/.exec(made.text)![1]!;
-    // The sample world is up in milliseconds, so by now it may be either.
-    expect((await ask('world_list')).text).toMatch(
-      new RegExp(`${world}(: starting, \\d+ s so far| \\(port )`),
-    );
+    expect((await ask('world_list')).text).toMatch(new RegExp(`${world}: starting, \\d+ s so far`));
     for (let i = 0; i < 600 && !h.worlds().some((w) => w.id === world); i++)
       await new Promise((r) => setTimeout(r, 100));
     expect((await ask('world_list')).text).toContain(`${world} (port `);
