@@ -199,6 +199,12 @@ export interface Product<W extends ProductWorld = ProductWorld> {
   /** Tenants' hosts are `<tenant>.<baseDomain>`, known before a world starts: needed for stand-ins. */
   baseDomain?: string;
   /**
+   * Where the product files the mail it sends as itself, not as a tenant (sign-in codes, invites, sign-up
+   * confirmations): the tenant key its messages hook takes for it, e.g. "_platform". phone_inbox reads it beside
+   * the tenant's own, so a code sent this way isn't missed.
+   */
+  platformMailbox?: string;
+  /**
    * Origins outside the world the product's pages load from (web fonts, maps). Giving them contains the world's
    * browsers (see `contain`): they reach only the world's own hosts, its stand-ins and these; the rest is blocked.
    */

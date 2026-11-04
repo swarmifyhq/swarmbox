@@ -13,6 +13,8 @@ import type { Persona, Product, ProductWorld, SignIn, StandInEndpoint } from '..
 import { builtinStandIn } from '../../src/standins/builtin/index.ts';
 
 export const BASE_DOMAIN = 'sample.test';
+/** Where the sample files what it sends as itself (a sign-in code), apart from any shop's mail. */
+const PLATFORM = '_platform';
 const TOKEN = 't'.repeat(43);
 
 const PEOPLE = (tenant: string): Persona[] => [
@@ -270,8 +272,15 @@ async function startSample(
           });
         }
         if (path === '/messages') {
-          const items = inbox.filter((m) => m.to === url.searchParams.get('to'));
-          return json(200, { ok: true, result: { items, next: items.at(-1)?.cursor ?? '0', lagMs: 0 } });
+          const company = url.searchParams.get('company');
+          const after = Number(url.searchParams.get('after') ?? 0);
+          const items = inbox.filter(
+            (m) => m.company === company && m.to === url.searchParams.get('to') && Number(m.cursor) > after,
+          );
+          return json(200, {
+            ok: true,
+            result: { items, next: items.at(-1)?.cursor ?? String(after), lagMs: 0 },
+          });
         }
         return json(404, { ok: false, error: { code: 'not_found', message: path } });
       }
@@ -323,6 +332,18 @@ async function startSample(
         receipts.push(`${tenant} ${body}`);
         return res.writeHead(204).end();
       }
+      // Email me a code: sent as the sample itself, not as the shop, so it is filed under its platform mailbox.
+      if (url.pathname === '/api/code' && req.method === 'POST') {
+        inbox.push({
+          cursor: String(++seq),
+          at: new Date().toISOString(),
+          company: PLATFORM,
+          kind: 'email',
+          to: body,
+          subject: 'Your sign-in code: 482913',
+        });
+        return json(200, { sent: true });
+      }
       if (url.pathname === '/api/send' && req.method === 'POST') {
         if (!who) return json(401, { error: { code: 'signed_out', message: 'Sign in first.' } });
         push(tenant, {
@@ -348,6 +369,7 @@ async function startSample(
         inbox.push({
           cursor: String(++seq),
           at: new Date().toISOString(),
+          company: tenant,
           kind: 'sms',
           to: body,
           body: 'Your estimate',
@@ -460,6 +482,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         spec.options?.noFeed === true,
       ),
     baseDomain: BASE_DOMAIN,
+    platformMailbox: PLATFORM,
     // Only in a world that asks for it, so the other tests start no stand-in.
     standins: [
       { name: 'postbox', dir: join(import.meta.dirname, 'standins/postbox'), always: false },

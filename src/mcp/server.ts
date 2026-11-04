@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { failing, formatReport } from '../checks.ts';
 import { DEVICES, type Device } from '../fleet/browser.ts';
 import { registerDeviceTools } from './device.ts';
+import { readInbox } from './inbox.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
@@ -254,19 +255,26 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'A phone’s or inbox’s messages',
       description:
         `Every text and email between the ${noun} and one number or address, as the fakes delivered them: ` +
-        'the phone a customer holds. Needs the product’s hooks.',
+        'the phone a customer holds. ' +
+        (product.platformMailbox
+          ? `With them, what ${product.name} sent that person as itself, not as a ${noun} (sign-in codes, invites, ` +
+            'sign-up confirmations), marked sentAs "the platform". '
+          : '') +
+        'Needs the product’s hooks.',
       inputSchema: {
         world: z.string(),
-        tenant: z.string(),
+        tenant: z.string().optional().describe(`Which ${noun}; default the world’s first`),
         to: z.string().min(3).describe('Whose: a phone number (+1555…) or an email address'),
-        after: z.string().optional(),
+        after: z.string().optional().describe('The `next` of an earlier read: only what came since'),
       },
       annotations: { readOnlyHint: true },
     },
     async ({ world, tenant, to, after }) =>
       guard(async () => {
         const hooks = await hooksOf(world);
-        return text(feedText((await hooks.messages(tenant, to, after ? { after } : {})) as never));
+        const t = tenant ?? h.world(world).world.tenants[0]!;
+        const page = await readInbox(hooks, t, to, after, product.platformMailbox);
+        return text([feedText(page as never), ...(page.note ? [page.note] : [])].join('\n'));
       }),
   );
 

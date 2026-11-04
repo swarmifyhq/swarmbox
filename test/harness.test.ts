@@ -342,6 +342,36 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(inbox.text).toContain('Your estimate');
   });
 
+  it('finds a sign-in code the product sent as itself, in the shop’s inbox, marked as the platform’s', async () => {
+    const port = h.world(world).world.port;
+    await new Promise<void>((done, fail) =>
+      http
+        .request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'POST',
+            path: '/api/code',
+            headers: { host: `north.sample.test:${port}` },
+          },
+          (res) => res.resume().on('end', done),
+        )
+        .on('error', fail)
+        .end('ann@example.test'),
+    );
+    // No tenant given: the world's first, north, and the platform's mailbox beside it.
+    const inbox = await call('phone_inbox', { world, to: 'ann@example.test' });
+    expect(inbox.error).toBe(false);
+    expect(inbox.text).toContain('1 items');
+    expect(inbox.text).toContain('"sentAs":"the platform"');
+    expect(inbox.text).toContain('"subject":"Your sign-in code: 482913"');
+    // Read on from its next: nothing new in either mailbox.
+    const next = /next (\S+);/.exec(inbox.text)![1]!;
+    expect((await call('phone_inbox', { world, to: 'ann@example.test', after: next })).text).toContain(
+      '0 items',
+    );
+  });
+
   it('reads the world’s own log, narrowed by text', async () => {
     const all = await call('world_log', { world, lines: 2 });
     expect(all.text.split('\n')).toHaveLength(2);
