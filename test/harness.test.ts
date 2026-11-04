@@ -659,14 +659,20 @@ describe('the pointer, and screens with layers', () => {
   });
 
   it('right-clicks and double-clicks plain text with no role, found as role "text"', async () => {
-    // exact: the status line says "Menu for Rename me" too.
+    // exact: "Double-clicked Rename me" is on the page too, after the first test run of this.
     const right = await act({ kind: 'click', role: 'text', name: 'Rename me', exact: true, button: 'right' });
     expect(right.error, right.text).toBe(false);
     expect(right.text).toContain('right-clicked text "Rename me"');
-    expect(right.text).toContain('Menu for Rename me');
+    // Nothing says so but the menu itself.
+    expect(right.text).toContain('opened: menu "Tab menu" (Rename)');
     const twice = await act({ kind: 'click', role: 'text', name: 'Rename me', exact: true, clickCount: 2 });
     expect(twice.text).toContain('double-clicked text "Rename me"');
     expect(twice.text).toContain('Double-clicked Rename me');
+  });
+
+  it('says what text came, when no status line or heading does', async () => {
+    const checked = await act({ kind: 'click', role: 'button', name: 'Check the form' });
+    expect(checked.text).toContain('changed: new text: "A selection is mandatory"');
   });
 
   it('drags plain text by a grip beside it, reached with grabOffset', async () => {
@@ -684,7 +690,7 @@ describe('the pointer, and screens with layers', () => {
     expect(moved.text).toContain(
       'dragged text "Page one" (held at 0, 0.5 -12, 0 px off it) onto text "Page two"',
     );
-    expect(moved.text).toContain('Order: Page two, Page one');
+    expect(moved.text).toMatch(/changed: the same text in a new order, from "[^"]*Page two/);
     // Held by its text, it doesn't move: why the offset is needed.
     const text = await act({
       kind: 'drag',
@@ -694,7 +700,7 @@ describe('the pointer, and screens with layers', () => {
       to: { role: 'text', name: 'Page one', exact: true },
     });
     expect(text.error, text.text).toBe(false);
-    expect(text.text).not.toContain('Order: Page one, Page two');
+    expect(text.text).toContain('changed: nothing a person would notice');
   });
 
   it('clicks a styled radio through the label drawn over it', async () => {

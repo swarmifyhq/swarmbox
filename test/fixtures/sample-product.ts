@@ -141,6 +141,7 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
 <button type="button" id="open-layer">Open the layer</button>
 <p role="status" id="said"></p>
 <div id="tabs"><div class="tab"><span class="grip" aria-hidden="true">::</span><span>Page one</span></div><div class="tab"><span class="grip" aria-hidden="true">::</span><span>Page two</span></div></div>
+<button type="button" id="check">Check the form</button><p id="invalid"></p>
 <span id="ctx">Rename me</span><ul role="menu" aria-label="Tab menu" id="menu" hidden><li role="menuitem">Rename</li></ul>
 <div style="height: 1500px"></div>
 <div class="lane" role="group" aria-label="Lane C"></div>
@@ -186,11 +187,13 @@ const BOARD_PAGE = `<!doctype html><html><head><title>Board</title><style>
     held = null;
     const onto = document.elementsFromPoint(e.clientX, e.clientY).map((n) => n.closest('.tab')).find((n) => n && n !== tab);
     if (!onto) return said('Tab dropped nowhere');
+    // Silently, as a tab bar does: only the order on screen says it moved.
     onto.after(tab);
-    said('Order: ' + [...document.querySelectorAll('.tab')].map((n) => n.lastChild.textContent).join(', '));
   });
+  // Inline validation as many forms show it: plain text, in no live region.
+  document.getElementById('check').onclick = () => (document.getElementById('invalid').textContent = 'A selection is mandatory');
   const ctx = document.getElementById('ctx');
-  ctx.addEventListener('contextmenu', (e) => { e.preventDefault(); document.getElementById('menu').hidden = false; said('Menu for Rename me'); });
+  ctx.addEventListener('contextmenu', (e) => { e.preventDefault(); document.getElementById('menu').hidden = false; });
   ctx.addEventListener('click', () => said('Left-clicked Rename me'));
   ctx.addEventListener('dblclick', () => said('Double-clicked Rename me'));
   document.getElementById('p-change').onclick = () => said('The panel changed it');
