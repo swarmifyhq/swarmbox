@@ -539,8 +539,9 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     scenarioDir: dirs.scenarioDir,
     home: dirs.home,
     apps: ['tech'],
-    startWorld: (spec, port) =>
-      startSample(
+    startWorld: async (spec, port) => {
+      await new Promise((r) => setTimeout(r, Number(spec.options?.startDelayMs ?? 0)));
+      return startSample(
         spec.tenants.length ? spec.tenants : ['demo-shop'],
         port,
         (spec.options?.closed as string[] | undefined) ?? [],
@@ -550,7 +551,8 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         Number(spec.options?.clockAheadMs ?? 0),
         spec.options?.clockBroken === true,
         spec.options?.noFeed === true,
-      ),
+      );
+    },
     baseDomain: BASE_DOMAIN,
     platformMailbox: PLATFORM,
     // Only in a world that asks for it, so the other tests start no stand-in.
@@ -570,6 +572,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
     worldOptions: {
       closed: z.array(z.string()).optional().describe('Shops closed for the season'),
       failStop: z.boolean().optional().describe('Its stop fails, as a product that won’t shut down cleanly'),
+      startDelayMs: z.number().optional().describe('Waits this long before starting, as a slow product does'),
     },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };
