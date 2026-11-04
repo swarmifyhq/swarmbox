@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHarness, type Harness } from '../src/harness.ts';
+import { createRuns } from '../src/runs/run.ts';
 import { parseKey, totp } from '../src/mcp/authenticator.ts';
 import { guard, serveMcp, type McpHttp } from '../src/mcp/server.ts';
 import { StandInError } from '../src/standins/runner.ts';
@@ -849,5 +850,83 @@ describe('a run of a scenario', () => {
     expect(html).toContain('The text never arrives');
     expect(existsSync(join(report, '..', 'findings', '1.png'))).toBe(true);
     expect(h.worlds()).toHaveLength(0);
+  });
+});
+
+describe('a run whose world takes longer than a client waits', () => {
+  // A second server on the same harness whose starts answer after 1 ms, as if every world took minutes.
+  let slow: McpHttp;
+  let impatient: Client;
+  const ask = async (name: string, args: Record<string, unknown> = {}) => {
+    const r = (await impatient.callTool({ name, arguments: args })) as {
+      isError?: boolean;
+      content: { text?: string }[];
+    };
+    return { text: r.content.map((c) => c.text ?? '').join('\n'), error: r.isError === true };
+  };
+  beforeAll(async () => {
+    slow = await serveMcp(h, 0, createRuns(h, { env: { ...process.env, SWARMBOX_START_WAIT_MS: '1' } }));
+    impatient = new Client({ name: 'impatient', version: '0' });
+    await impatient.connect(new StreamableHTTPClientTransport(new URL(slow.url)));
+  });
+  afterAll(async () => {
+    await impatient.close();
+    await slow.close();
+  });
+
+  it('answers with the run’s id, gives the same start to a retry, and hands it over through run_status', async () => {
+    const worlds = () => h.startingWorlds().length + h.worlds().length;
+    const before = worlds();
+    const first = await ask('run_start', { scenario: 'send-an-estimate' });
+    expect(first.error, first.text).toBe(false);
+    const run = /^run (\S+) is still starting/.exec(first.text)![1]!;
+    expect(first.text).toContain(`run_status with run "${run}"`);
+    // The client gave up and asked again: the same run, no second world.
+    const again = await ask('run_start', { scenario: 'send-an-estimate' });
+    expect(again.text).toContain(`run ${run}`);
+    expect(worlds()).toBe(before + 1);
+    expect((await ask('run_status')).text).toMatch(new RegExp(`${run}: starting its world`));
+
+    let brief = '';
+    for (let i = 0; i < 600 && !brief; i++) {
+      const s = await ask('run_status', { run });
+      expect(s.error, s.text).toBe(false);
+      if (s.text.includes('cast:')) brief = s.text;
+      else await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(brief).toMatch(/s\d+: Ana \(owner\), the office/);
+    expect(brief).toContain('try:');
+
+    // Its world stops before the run is ended: run_status says so, and run_end still closes it.
+    const world = /^run \S+ on (w\d+)/.exec(brief)![1]!;
+    expect((await ask('world_destroy', { world })).error).toBe(false);
+    expect((await ask('run_status')).text).toContain(`its world ${world} has stopped: end it with run_end`);
+    const ended = await ask('run_end', { run });
+    expect(ended.error, ended.text).toBe(false);
+    expect(ended.text).toMatch(/0 failing checks/);
+    const report = /report: (\S+)/.exec(ended.text)![1]!;
+    expect(readFileSync(report, 'utf8')).toContain(`world ${world} had already stopped, so no checks ran`);
+    expect((await ask('run_status')).text).not.toContain(run);
+  });
+
+  it('answers world_create with the world’s id while it starts, and world_list shows it starting', async () => {
+    const made = await ask('world_create', { tenants: ['late'] });
+    expect(made.text).toMatch(/^world w\d+ is still starting/);
+    const world = /^world (w\d+) is still starting/.exec(made.text)![1]!;
+    // The sample world is up in milliseconds, so by now it may be either.
+    expect((await ask('world_list')).text).toMatch(
+      new RegExp(`${world}(: starting, \\d+ s so far| \\(port )`),
+    );
+    for (let i = 0; i < 600 && !h.worlds().some((w) => w.id === world); i++)
+      await new Promise((r) => setTimeout(r, 100));
+    expect((await ask('world_list')).text).toContain(`${world} (port `);
+    expect((await ask('world_destroy', { world })).error).toBe(false);
+
+    // In the harness itself: listed as starting, with its id, from the moment it's asked for.
+    const early = h.createWorld({ tenants: ['early'] });
+    expect(h.startingWorlds().map((x) => x.id)).toContain(early.id);
+    await early;
+    expect(h.startingWorlds().map((x) => x.id)).not.toContain(early.id);
+    await h.destroyWorld(early.id);
   });
 });

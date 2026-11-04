@@ -68,10 +68,36 @@ export interface RunRecord {
   summary?: string;
   /** Whether the run is registered in the product's tracker, or why not. */
   filed?: string;
+  /** Set when the run ended after its world had already stopped: no checks could run. */
+  worldGone?: string;
+}
+
+/**
+ * A run being started: its id from the first moment, and the run once its world and screens are up. A world can
+ * take minutes to start, longer than a client waits for a tool's answer.
+ */
+export interface StartingRun {
+  id: string;
+  scenario: string;
+  since: string;
+  ready: Promise<RunRecord>;
+  /** Why it didn't start, once it hasn't. */
+  error?: string;
 }
 
 export interface Runs {
   start(scenarioId: string): Promise<RunRecord>;
+  /**
+   * Start a run without waiting for it. A start of the same scenario that no client has taken yet (its answer
+   * said it was still starting, or never arrived) is given back, rather than a second world nobody would end.
+   */
+  begin(scenarioId: string): StartingRun;
+  /** Starts no client has taken yet, the failed ones included until they are taken. */
+  starting(): StartingRun[];
+  /** A client has been given the started run, or told why it didn't start. */
+  taken(runId: string): void;
+  /** How long run_start and run_status wait for a start before answering that it's still going. */
+  startWaitMs: number;
   /** Records a finding; files it to the product's tracker unless it is a note or `report` is false. */
   finding(
     runId: string,
@@ -98,6 +124,9 @@ export interface Runs {
 
 const minutesSince = (iso: string) => (Date.now() - Date.parse(iso)) / 60_000;
 
+/** Under the 60 s an MCP client waits for a tool's answer by default (claude -p's included). */
+const START_WAIT_MS = 45_000;
+
 export function createRuns<W extends ProductWorld>(
   h: Harness<W>,
   opts: { env?: NodeJS.ProcessEnv; scenarioDir?: string; home?: string; findings?: FindingSink | null } = {},
@@ -108,6 +137,9 @@ export function createRuns<W extends ProductWorld>(
   const sink = opts.findings === undefined ? product.findings : opts.findings;
   const budget = openBudget(home, env);
   const runs = new Map<string, RunRecord>();
+  const starts = new Map<string, StartingRun>();
+  const wait = Number(env.SWARMBOX_START_WAIT_MS);
+  const startWaitMs = Number.isFinite(wait) && wait > 0 ? wait : START_WAIT_MS;
   const get = (id: string) => {
     const r = runs.get(id);
     if (!r) throw new HarnessError(`no run ${id}`);
@@ -125,86 +157,119 @@ export function createRuns<W extends ProductWorld>(
     commit: r.commit,
     findings: r.findings.length,
   });
+  /** The world, its clock, the cast on their screens, and the run's record. */
+  const open = async (
+    id: string,
+    scenario: Scenario,
+    options: Record<string, unknown> | undefined,
+  ): Promise<RunRecord> => {
+    const w = await h.createWorld({
+      ...(scenario.world.tenants ? { tenants: scenario.world.tenants } : {}),
+      seed: scenario.world.seed,
+      ...(scenario.world.keep ? { keep: scenario.world.keep } : {}),
+      ...(options ? { options } : {}),
+      ...(scenario.world.standins ? { standins: scenario.world.standins } : {}),
+    });
+    try {
+      const people = await h.people(w.id);
+      // The day starts where the scenario says, before anyone signs in, in the first tenant's zone.
+      if (scenario.world.startsAt) {
+        const tenant = scenario.cast[0]?.tenant ?? w.world.tenants[0];
+        const zone = people.find((p) => p.tenant === tenant)?.timeZone ?? 'UTC';
+        const now = new Date((await h.moveClock(w.id)).process.at);
+        const to = startInstant(scenario.world.startsAt, zone, now);
+        if (to.getTime() > now.getTime()) await h.moveClock(w.id, { to: to.toISOString() });
+      }
+      // The cast, by role: the first person holding it, the second for a second of the same role.
+      const used = new Set<string>();
+      const cast: CastMember[] = [];
+      for (const c of scenario.cast) {
+        const p = people.find(
+          (x) => x.roles.includes(c.role) && (!c.tenant || x.tenant === c.tenant) && !used.has(x.id),
+        );
+        if (!p) {
+          const roles = [...new Set(people.flatMap((x) => x.roles))].join(', ');
+          throw new HarnessError(
+            `this world has no ${c.role} left for the cast (it has: ${roles || 'nobody'})`,
+          );
+        }
+        used.add(p.id);
+        // The app this person works in: the scenario's word, else the product's (a technician's tablet).
+        const app = c.app ?? (await product.appFor?.(p, w.world));
+        const s = await h.openScreen(w.id, p.id, undefined, app === undefined ? {} : { app });
+        // Every action, request and frame from here on, replayable with `npx playwright show-trace`.
+        await s.screen.context.tracing.start({ screenshots: true, snapshots: true });
+        cast.push({ role: c.role, ...(c.part ? { part: c.part } : {}), persona: p, screen: s.id });
+      }
+      const dir = join(home, 'runs', id);
+      mkdirSync(join(dir, 'findings'), { recursive: true });
+      mkdirSync(join(dir, 'traces'), { recursive: true });
+      const r: RunRecord = {
+        id,
+        product: product.title ?? product.name,
+        scenario,
+        worldId: w.id,
+        dir,
+        startedAt: new Date().toISOString(),
+        cast,
+        findings: [],
+        provenance: describeProvenance(w.world.provenance),
+        commit: w.world.provenance.commit,
+      };
+      runs.set(id, r);
+      save(r);
+      return r;
+    } catch (e) {
+      await h.destroyWorld(w.id).catch(() => undefined);
+      throw e;
+    }
+  };
+
+  function begin(scenarioId: string): StartingRun {
+    const scenario = loadScenario(scenarioId, scenarioDir);
+    const again = [...starts.values()].find((x) => x.scenario === scenario.id && !x.error);
+    if (again) return again;
+    const refused = budget.refusal();
+    if (refused) throw new HarnessError(`not starting ${scenarioId}: ${refused}`);
+    const options = scenario.world.options;
+    if (options && !product.worldOptions)
+      throw new HarnessError(`${scenarioId}: world.options given, and ${product.name} takes none`);
+    const checked = options ? z.strictObject(product.worldOptions!).safeParse(options) : undefined;
+    if (checked && !checked.success)
+      throw new HarnessError(`${scenarioId}: world.options: ${z.prettifyError(checked.error)}`);
+    budget.started();
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
+    const id = `${stamp}-${scenario.id}-${randomBytes(2).toString('hex')}`;
+    const s: StartingRun = {
+      id,
+      scenario: scenario.id,
+      since: new Date().toISOString(),
+      ready: open(id, scenario, checked?.data as Record<string, unknown> | undefined),
+    };
+    s.ready.catch((e: unknown) => (s.error = (e as Error).message));
+    starts.set(id, s);
+    return s;
+  }
+
   return {
     budget,
     scenarioDir,
     get,
     active: () => [...runs.values()].filter((r) => !r.endedAt),
 
+    starting: () => [...starts.values()],
+    taken: (id) => void starts.delete(id),
+    startWaitMs,
+    // A caller that waits for the run takes it.
     async start(scenarioId) {
-      const scenario = loadScenario(scenarioId, scenarioDir);
-      const refused = budget.refusal();
-      if (refused) throw new HarnessError(`not starting ${scenarioId}: ${refused}`);
-      const options = scenario.world.options;
-      if (options && !product.worldOptions)
-        throw new HarnessError(`${scenarioId}: world.options given, and ${product.name} takes none`);
-      const checked = options ? z.strictObject(product.worldOptions!).safeParse(options) : undefined;
-      if (checked && !checked.success)
-        throw new HarnessError(`${scenarioId}: world.options: ${z.prettifyError(checked.error)}`);
-      budget.started();
-      const w = await h.createWorld({
-        ...(scenario.world.tenants ? { tenants: scenario.world.tenants } : {}),
-        seed: scenario.world.seed,
-        ...(scenario.world.keep ? { keep: scenario.world.keep } : {}),
-        ...(checked ? { options: checked.data as Record<string, unknown> } : {}),
-        ...(scenario.world.standins ? { standins: scenario.world.standins } : {}),
-      });
+      const s = begin(scenarioId);
       try {
-        const people = await h.people(w.id);
-        // The day starts where the scenario says, before anyone signs in, in the first tenant's zone.
-        if (scenario.world.startsAt) {
-          const tenant = scenario.cast[0]?.tenant ?? w.world.tenants[0];
-          const zone = people.find((p) => p.tenant === tenant)?.timeZone ?? 'UTC';
-          const now = new Date((await h.moveClock(w.id)).process.at);
-          const to = startInstant(scenario.world.startsAt, zone, now);
-          if (to.getTime() > now.getTime()) await h.moveClock(w.id, { to: to.toISOString() });
-        }
-        // The cast, by role: the first person holding it, the second for a second of the same role.
-        const used = new Set<string>();
-        const cast: CastMember[] = [];
-        for (const c of scenario.cast) {
-          const p = people.find(
-            (x) => x.roles.includes(c.role) && (!c.tenant || x.tenant === c.tenant) && !used.has(x.id),
-          );
-          if (!p) {
-            const roles = [...new Set(people.flatMap((x) => x.roles))].join(', ');
-            throw new HarnessError(
-              `this world has no ${c.role} left for the cast (it has: ${roles || 'nobody'})`,
-            );
-          }
-          used.add(p.id);
-          // The app this person works in: the scenario's word, else the product's (a technician's tablet).
-          const app = c.app ?? (await product.appFor?.(p, w.world));
-          const s = await h.openScreen(w.id, p.id, undefined, app === undefined ? {} : { app });
-          // Every action, request and frame from here on, replayable with `npx playwright show-trace`.
-          await s.screen.context.tracing.start({ screenshots: true, snapshots: true });
-          cast.push({ role: c.role, ...(c.part ? { part: c.part } : {}), persona: p, screen: s.id });
-        }
-        const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
-        const id = `${stamp}-${scenario.id}-${randomBytes(2).toString('hex')}`;
-        const dir = join(home, 'runs', id);
-        mkdirSync(join(dir, 'findings'), { recursive: true });
-        mkdirSync(join(dir, 'traces'), { recursive: true });
-        const r: RunRecord = {
-          id,
-          product: product.title ?? product.name,
-          scenario,
-          worldId: w.id,
-          dir,
-          startedAt: new Date().toISOString(),
-          cast,
-          findings: [],
-          provenance: describeProvenance(w.world.provenance),
-          commit: w.world.provenance.commit,
-        };
-        runs.set(id, r);
-        save(r);
-        return r;
-      } catch (e) {
-        await h.destroyWorld(w.id).catch(() => undefined);
-        throw e;
+        return await s.ready;
+      } finally {
+        starts.delete(s.id);
       }
     },
+    begin,
 
     async join(screenId) {
       const s = h.screen(screenId);
@@ -262,6 +327,10 @@ export function createRuns<W extends ProductWorld>(
     async end(runId, { summary, keepWorld = false } = {}) {
       const r = get(runId);
       if (r.endedAt) throw new HarnessError(`run ${runId} has already ended`);
+      starts.delete(runId);
+      // Its world can have stopped first (stopped by hand, or it died): the run still ends, with what it has.
+      const alive = () => h.worlds().some((w) => w.id === r.worldId);
+      let gone = !alive();
       r.traces = [];
       // A screen closed during the run (a customer's link, done with) has no trace left to stop.
       const open = (id: string) => h.screens().find((x) => x.id === id);
@@ -278,7 +347,15 @@ export function createRuns<W extends ProductWorld>(
         .flatMap((c) => open(c.screen)?.signals ?? [])
         .filter((s) => s.at >= r.startedAt)
         .sort((a, b) => a.at.localeCompare(b.at));
-      r.checks = await h.check(r.worldId);
+      const none = { settled: {}, results: [] };
+      r.checks = gone
+        ? none
+        : await h.check(r.worldId).catch((e: unknown) => {
+            if (alive()) throw e;
+            gone = true;
+            return none;
+          });
+      if (gone) r.worldGone = `world ${r.worldId} had already stopped, so no checks ran`;
       r.endedAt = new Date().toISOString();
       r.browserMinutes = Math.round(minutesSince(r.startedAt) * r.cast.length * 100) / 100;
       if (summary) r.summary = summary;
@@ -301,7 +378,7 @@ export function createRuns<W extends ProductWorld>(
       save(r);
       const report = join(r.dir, 'report.html');
       writeFileSync(report, renderReport(r));
-      if (!keepWorld) await h.destroyWorld(r.worldId).catch(() => undefined);
+      if (!keepWorld && !gone) await h.destroyWorld(r.worldId).catch(() => undefined);
       return { ...r, report };
     },
 
