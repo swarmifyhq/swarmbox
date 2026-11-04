@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { failing, formatReport } from '../checks.ts';
 import { DEVICES, type Device } from '../fleet/browser.ts';
 import { registerDeviceTools } from './device.ts';
+import { parseKey, totp } from './authenticator.ts';
 import { readInbox } from './inbox.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
@@ -286,6 +287,36 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         const t = tenant ?? h.world(world).world.tenants[0]!;
         const page = await readInbox(hooks, t, to, after, product.platformMailbox);
         return text([feedText(page as never), ...(page.note ? [page.note] : [])].join('\n'));
+      }),
+  );
+
+  server.registerTool(
+    'phone_authenticator',
+    {
+      title: 'The authenticator app on a person’s phone',
+      description:
+        'The code an authenticator app shows for a key, at the world’s time (the clock the product checks it ' +
+        'against): give the key a two-step setup screen shows (the letters and digits under the QR code, spaces ' +
+        'and all) or its otpauth:// link. Read the key off the screen; a key is the person’s, so don’t put it in a ' +
+        'finding. Needs the product’s hooks.',
+      inputSchema: {
+        world: z.string(),
+        key: z.string().min(16).describe('The setup key, or an otpauth://totp/ link'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ world, key }) =>
+      guard(async () => {
+        let parsed;
+        try {
+          parsed = parseKey(key);
+        } catch (e) {
+          throw new HarnessError((e as Error).message);
+        }
+        const at = Date.parse((await h.moveClock(world)).process.at);
+        const now = totp(parsed, at);
+        const next = totp(parsed, at + now.secondsLeft * 1000);
+        return text(`${now.code} (for ${now.secondsLeft} s more; then ${next.code})`);
       }),
   );
 

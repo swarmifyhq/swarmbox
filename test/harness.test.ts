@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHarness, type Harness } from '../src/harness.ts';
+import { parseKey, totp } from '../src/mcp/authenticator.ts';
 import { guard, serveMcp, type McpHttp } from '../src/mcp/server.ts';
 import { StandInError } from '../src/standins/runner.ts';
 import { saveScenario } from '../src/scenarios/spec.ts';
@@ -554,6 +555,21 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     const page = h.screen(/^screen (s\d+)/.exec(later.text)![1]!).screen.page;
     const started = await page.evaluate(() => (window as unknown as { startedAt: number }).startedAt);
     expect(started - before).toBeGreaterThan(86_000_000);
+  });
+
+  it('gives the authenticator code at the world’s time, a day ahead of this machine', async () => {
+    const key = 'GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ';
+    const got = await call('phone_authenticator', { world, key });
+    expect(got.text).toMatch(/^\d{6} \(for \d+ s more; then \d{6}\)$/);
+    const at = Date.parse((await h.moveClock(world)).process.at);
+    // the world's step, or the one before if a step ended between the two reads
+    expect([totp(parseKey(key), at).code, totp(parseKey(key), at - 30_000).code]).toContain(
+      got.text.slice(0, 6),
+    );
+    expect(at - Date.now()).toBeGreaterThan(86_000_000);
+    const bad = await call('phone_authenticator', { world, key: 'not a key: 0189 !!!!' });
+    expect(bad.error).toBe(true);
+    expect(bad.text).toMatch(/base32/);
   });
 
   it('runs the product’s checks', async () => {
