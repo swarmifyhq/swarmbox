@@ -1141,8 +1141,11 @@ export function createHarness<W extends ProductWorld>(
       const page = s.screen.page;
       const before = await glance(page);
       const since = s.requests.last();
-      // From here: what the server does next is what this action caused (or something late finishing).
+      // From here: what the server does next is what this action caused (or something late finishing). What it
+      // did before (an iPad's queue sending once it's back online, another screen's work) is read off now, so
+      // it isn't put down to this action.
       await feedCursor(w, s.persona.tenant);
+      const earlier = w.feedAt.has(s.persona.tenant) ? await serverSince(w, s) : [];
       const origin = w.fleet.originFor(s.persona.tenant);
       const refused: Promise<string>[] = [];
       const onResponse = (r: PwResponse) => {
@@ -1331,6 +1334,11 @@ export function createHarness<W extends ProductWorld>(
           : w.feedAt.has(s.persona.tenant)
             ? ['server: nothing from this screen']
             : []),
+        ...(earlier.length
+          ? [
+              `before this: ${earlier.slice(0, SERVER_LINES).join('\n             ')}${earlier.length > SERVER_LINES ? `\n             … ${earlier.length - SERVER_LINES} more (feed_read has them)` : ''}`,
+            ]
+          : []),
         ...(refusals.length ? [`refused: ${refusals.join('\n         ')}`] : []),
         ...(stillOpen.length
           ? [

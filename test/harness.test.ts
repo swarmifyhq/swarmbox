@@ -840,6 +840,32 @@ describe('a world whose product names what its pages load from outside', () => {
   });
 });
 
+describe('a server that acts between two actions', () => {
+  it('puts what it did under "before this", not down to the next action', async () => {
+    const w = await h.createWorld({ tenants: ['between'] });
+    try {
+      const opened = await call('screen_open', { world: w.id, person: 'between-ana' });
+      const screen = /^screen (s\d+)/.exec(opened.text)![1]!;
+      await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Send estimate' } });
+      // Between two actions, the page sends on its own, as an iPad's queue does once it's back online.
+      await h
+        .screen(screen)
+        .screen.page.evaluate(() =>
+          fetch('/api/send', { method: 'POST', body: '+15550199' }).then((r) => r.status),
+        );
+      const cancelled = await call('screen_act', {
+        screen,
+        action: { kind: 'click', role: 'button', name: 'Cancel' },
+      });
+      expect(cancelled.error, cancelled.text).toBe(false);
+      expect(cancelled.text).toContain('before this: you: estimates.send ok → messages.send');
+      expect(cancelled.text).not.toMatch(/^server: you: estimates\.send/m);
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+});
+
 describe('a world whose clock hook is broken', () => {
   it('still opens screens, on this machine’s time', async () => {
     const w = await h.createWorld({ tenants: ['broken'], options: { clockBroken: true } });

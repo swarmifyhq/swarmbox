@@ -5,6 +5,13 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.16.0 (2026-11-05)
+
+- An action's readout no longer puts down to the action what the server did before it began. What happened
+  between two actions (an iPad's queued work sending once it's back online, another screen's work) is listed
+  under "before this:", and "server:" holds only what came during the action. It used to read as if opening a
+  panel had recorded a part and an invoice line. (Seen in a Flowology crew run.)
+
 ## 0.15.0 (2026-11-04)
 
 - `run_start` answers within 45 seconds, before an MCP client gives up on the call (60 s by default,
