@@ -547,7 +547,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         'name, as in screen_read, or by role "text" for an element with no role, by its visible text; of several, the one in the open dialog is taken, else each is described for index. ' +
         'Something behind a modal dialog is refused with the dialog’s name. Waits for the requests it started (up ' +
         'to 15 s). Returns what it did, what changed (dialogs, status lines, headings, the address), what the server did (yours, with what it set off, and any failure ' +
-        `in the ${noun} since the last action), requests refused, then the screen as it is. Refused while a ` +
+        `in the ${noun} during it), what it did before this action began ("before this": an iPad's queue sending ` +
+        'once back online, say), requests refused, then the screen as it is. Refused while a ' +
         'person has the screen.',
       inputSchema: {
         screen: z.string(),
