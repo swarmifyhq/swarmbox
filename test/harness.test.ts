@@ -13,6 +13,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { createHarness, type Harness } from '../src/harness.ts';
 import { createRuns } from '../src/runs/run.ts';
+import type { ResultsFile } from '../src/runs/results.ts';
 import { parseKey, totp } from '../src/mcp/authenticator.ts';
 import { guard, serveMcp, type McpHttp } from '../src/mcp/server.ts';
 import { StandInError } from '../src/standins/runner.ts';
@@ -920,7 +921,7 @@ describe('a run of a scenario', () => {
       },
       { dir: scenarioDir },
     );
-    const started = await call('run_start', { scenario: 'send-an-estimate' });
+    const started = await call('run_start', { scenario: 'send-an-estimate', recheck: ['B-1', 'B-2'] });
     expect(started.error).toBe(false);
     const run = /^run (\S+)/.exec(started.text)![1]!;
     expect(started.text).toMatch(/s\d+: Ana \(owner\), the office/);
@@ -948,6 +949,20 @@ describe('a run of a scenario', () => {
     });
     expect(logged.text).toBe('finding #1 logged with a screenshot');
 
+    // A hold has to show what it saw; said twice, the last word stands.
+    const bare = await call('result_log', { run, ref: 'B-1', outcome: 'held', what: 'From the office' });
+    expect(bare.error).toBe(true);
+    expect(bare.text).toContain('needs the screen');
+    await call('result_log', { run, ref: 'B-1', outcome: 'held', what: 'Looks right', screen: office });
+    const said = await call('result_log', {
+      run,
+      ref: 'B-1',
+      outcome: 'came-back',
+      what: 'From the office, on the second send',
+      screen: office,
+    });
+    expect(said.text).toBe('B-1: came-back logged with a screenshot');
+
     const ended = await call('run_end', { run, summary: 'Sent one estimate.' });
     expect(ended.text).toMatch(/1 findings, 0 failing checks/);
     expect(ended.text).not.toContain('tracker:');
@@ -956,6 +971,20 @@ describe('a run of a scenario', () => {
     expect(html).toContain('Sample run');
     expect(html).toContain('The text never arrives');
     expect(existsSync(join(report, '..', 'findings', '1.png'))).toBe(true);
+    expect(html).toContain('B-1: came-back.');
+    const results = JSON.parse(readFileSync(/results: (\S+)/.exec(ended.text)![1]!, 'utf8')) as ResultsFile;
+    expect(results.commit).not.toBe('');
+    expect(results.results).toEqual([
+      {
+        ref: 'B-1',
+        outcome: 'came-back',
+        what: 'From the office, on the second send',
+        by: 'tester',
+        screenshot: 'results/B-1.png',
+      },
+      { ref: 'B-2', outcome: 'not-reached', what: 'Nobody reported on it', by: 'nobody' },
+    ]);
+    expect(existsSync(join(report, '..', 'results', 'B-1.png'))).toBe(true);
     expect(h.worlds()).toHaveLength(0);
   });
 });

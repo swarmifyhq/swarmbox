@@ -5,6 +5,12 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new
+  `result_log` records held, came-back or not-reached with a picture, and `run_end` writes `results.json` beside
+  the report. It needs no tracker. Anything on the list that nobody spoke to reads not-reached. A known red that
+  now passes is a hold by that check, kept apart from the tester's word.
+- `FindingSink.register` is given the results as `results`.
+
 ## 0.16.0 (2026-11-05)
 
 - An action's readout no longer puts down to the action what the server did before it began. What happened
