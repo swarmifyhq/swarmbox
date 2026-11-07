@@ -111,6 +111,19 @@ export function renderReport(r: RunRecord): string {
           .join('\n')
   }
 
+  ${
+    r.results.length || r.recheck.length
+      ? `<h2>Looked at again</h2>
+  <p class="muted">The picture is in <span class="mono">results/</span>; the full list is <span class="mono">results.json</span>.</p>
+  <ul>${[
+    ...r.results.map((x) => `<li><strong>${esc(x.ref)}: ${esc(x.outcome)}.</strong> ${esc(x.what)}</li>`),
+    ...r.recheck
+      .filter((ref) => !r.results.some((x) => x.ref === ref))
+      .map((ref) => `<li class="muted"><strong>${esc(ref)}: no word from the tester.</strong></li>`),
+  ].join('')}</ul>`
+      : ''
+  }
+
   <h2>Checks on the data (${checks.length})</h2>
   ${r.worldGone ? `<p class="o-fail">${esc(r.worldGone)}.</p>` : ''}
   ${unsettled.length ? `<p class="o-fail">The worker had not caught up in ${unsettled.map(([k]) => esc(k)).join(', ')} when the checks ran.</p>` : ''}

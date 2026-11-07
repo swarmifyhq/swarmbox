@@ -818,10 +818,14 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         'finding_log, and finish with run_end, which runs every check and writes the report. A world can take ' +
         'minutes to start: if it is still starting, the answer gives the run id, and run_status with that run ' +
         'waits for it. Calling run_start again for the same scenario gives back the same start. Refused past ' +
-        'the daily budget.',
-      inputSchema: { scenario: z.string() },
+        'the daily budget. recheck names what this run is to look at again: anything on it that gets no ' +
+        'result_log is recorded as not reached.',
+      inputSchema: {
+        scenario: z.string(),
+        recheck: z.array(z.string().min(1).max(40)).max(200).optional(),
+      },
     },
-    async ({ scenario }) => guard(() => collect(runs.begin(scenario))),
+    async ({ scenario, recheck }) => guard(() => collect(runs.begin(scenario, recheck ? { recheck } : {}))),
   );
 
   server.registerTool(
@@ -871,6 +875,30 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
   );
 
   server.registerTool(
+    'result_log',
+    {
+      title: 'Log a result',
+      description:
+        'Say what became of something you were asked to look at again: held, came-back or not-reached. Held and ' +
+        'came-back take the screen it was seen on, for the picture. In what, name the path you took: a hold ' +
+        'only speaks for that path. Said again, the last word stands. A came-back is a result, not a new ' +
+        'problem; something new is a finding_log.',
+      inputSchema: {
+        run: z.string(),
+        ref: z.string().min(1).max(40),
+        outcome: z.enum(['held', 'came-back', 'not-reached']),
+        what: z.string().min(3).max(2000),
+        screen: z.string().optional(),
+      },
+    },
+    async ({ run, ref, outcome, what, screen }) =>
+      guard(async () => {
+        const said = await runs.result(run, { ref, outcome, what, ...(screen ? { screen } : {}) });
+        return text(`${ref}: ${outcome} logged${said.screenshot ? ' with a screenshot' : ''}`);
+      }),
+  );
+
+  server.registerTool(
     'run_end',
     {
       title: 'End a run',
@@ -896,6 +924,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             `run ${r.id} ended: ${r.findings.length} findings, ${bad.length} failing checks, ${r.signals!.length} browser signals, ${r.browserMinutes} browser-minutes`,
             ...bad.map((c) => `  FAIL ${c.id} @ ${c.where}: ${c.violations[0]?.summary ?? c.error ?? ''}`),
             `report: ${r.report}`,
+            `results: ${r.resultsFile}`,
             ...(product.findings ? [`tracker: ${r.filed ?? 'not asked'}`] : []),
             ...(share ? [`share: ${share}`] : []),
           ].join('\n'),

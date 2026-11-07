@@ -20,6 +20,7 @@ import { startInstant } from '../time.ts';
 import { loadScenario, type Scenario } from '../scenarios/spec.ts';
 import { openBudget, type Budget } from './budget.ts';
 import { renderReport } from './report.ts';
+import { buildResults, type ResultOutcome, type ResultsFile, type TesterResult } from './results.ts';
 
 export type Severity = 'blocker' | 'major' | 'minor' | 'note';
 
@@ -57,6 +58,10 @@ export interface RunRecord {
   endedAt?: string;
   cast: CastMember[];
   findings: Finding[];
+  /** What the run was asked to look at again. */
+  recheck: string[];
+  /** What the tester said about each, the last word for each ref. */
+  results: TesterResult[];
   provenance: string;
   /** The product commit the world ran: a filed finding's found_in. */
   commit: string;
@@ -91,7 +96,7 @@ export interface Runs {
    * Start a run without waiting for it. A start of the same scenario that no client has taken yet (its answer
    * said it was still starting, or never arrived) is given back, rather than a second world nobody would end.
    */
-  begin(scenarioId: string): StartingRun;
+  begin(scenarioId: string, opts?: { recheck?: string[] }): StartingRun;
   /** Starts no client has taken yet, the failed ones included until they are taken. */
   starting(): StartingRun[];
   /** A client has been given the started run, or told why it didn't start. */
@@ -104,10 +109,18 @@ export interface Runs {
     f: Omit<Finding, 'n' | 'at' | 'url' | 'screenshot' | 'filed'>,
     report?: boolean,
   ): Promise<Finding>;
+  /**
+   * Records whether something held, came back or wasn't reached. Held and came back need the screen it was seen
+   * on, for the picture. Said again, the last word stands.
+   */
+  result(
+    runId: string,
+    r: { ref: string; outcome: ResultOutcome; what: string; screen?: string },
+  ): Promise<TesterResult>;
   end(
     runId: string,
     opts?: { summary?: string; keepWorld?: boolean },
-  ): Promise<RunRecord & { report: string }>;
+  ): Promise<RunRecord & { report: string; resultsFile: string }>;
   get(runId: string): RunRecord;
   active(): RunRecord[];
   /**
@@ -162,6 +175,7 @@ export function createRuns<W extends ProductWorld>(
     id: string,
     scenario: Scenario,
     options: Record<string, unknown> | undefined,
+    recheck: string[],
   ): Promise<RunRecord> => {
     const w = await h.createWorld({
       ...(scenario.world.tenants ? { tenants: scenario.world.tenants } : {}),
@@ -213,6 +227,8 @@ export function createRuns<W extends ProductWorld>(
         startedAt: new Date().toISOString(),
         cast,
         findings: [],
+        recheck,
+        results: [],
         provenance: describeProvenance(w.world.provenance),
         commit: w.world.provenance.commit,
       };
@@ -225,7 +241,7 @@ export function createRuns<W extends ProductWorld>(
     }
   };
 
-  function begin(scenarioId: string): StartingRun {
+  function begin(scenarioId: string, { recheck = [] }: { recheck?: string[] } = {}): StartingRun {
     const scenario = loadScenario(scenarioId, scenarioDir);
     const again = [...starts.values()].find((x) => x.scenario === scenario.id && !x.error);
     if (again) return again;
@@ -244,7 +260,7 @@ export function createRuns<W extends ProductWorld>(
       id,
       scenario: scenario.id,
       since: new Date().toISOString(),
-      ready: open(id, scenario, checked?.data as Record<string, unknown> | undefined),
+      ready: open(id, scenario, checked?.data as Record<string, unknown> | undefined, recheck),
     };
     s.ready.catch((e: unknown) => (s.error = (e as Error).message));
     starts.set(id, s);
@@ -324,6 +340,25 @@ export function createRuns<W extends ProductWorld>(
       return finding;
     },
 
+    async result(runId, { ref, outcome, what, screen }) {
+      const r = get(runId);
+      if (r.endedAt) throw new HarnessError(`run ${runId} has ended`);
+      if (outcome !== 'not-reached' && !screen)
+        throw new HarnessError(`${ref}: ${outcome} needs the screen it was seen on, for the picture`);
+      const said: TesterResult = { ref, outcome, what, at: new Date().toISOString() };
+      if (screen) {
+        if (!r.cast.some((c) => c.screen === screen))
+          throw new HarnessError(`screen ${screen} is not in run ${runId}`);
+        const shot = join('results', `${ref.replace(/[^\w.-]/g, '_')}.png`);
+        mkdirSync(join(r.dir, 'results'), { recursive: true });
+        await h.screen(screen).screen.page.screenshot({ path: join(r.dir, shot) });
+        said.screenshot = shot;
+      }
+      r.results = [...r.results.filter((x) => x.ref !== ref), said];
+      save(r);
+      return said;
+    },
+
     async end(runId, { summary, keepWorld = false } = {}) {
       const r = get(runId);
       if (r.endedAt) throw new HarnessError(`run ${runId} has already ended`);
@@ -360,6 +395,14 @@ export function createRuns<W extends ProductWorld>(
       r.browserMinutes = Math.round(minutesSince(r.startedAt) * r.cast.length * 100) / 100;
       if (summary) r.summary = summary;
       budget.spend(r.browserMinutes);
+      // Written before the tracker hears of it, so a tracker that's down never costs a result.
+      const results: ResultsFile = buildResults({
+        ...r,
+        endedAt: r.endedAt,
+        checks: r.checks.results,
+      });
+      const resultsFile = join(r.dir, 'results.json');
+      writeFileSync(resultsFile, `${JSON.stringify(results, null, 2)}\n`);
       if (sink) {
         if (sink.unavailable) r.filed = `not registered: ${sink.unavailable}`;
         else
@@ -369,6 +412,7 @@ export function createRuns<W extends ProductWorld>(
               endedAt: r.endedAt,
               failingChecks: failing(r.checks.results).length,
               reportPath: join(r.dir, 'report.html'),
+              results,
             })
             .then(
               () => (r.filed = 'registered'),
@@ -379,7 +423,7 @@ export function createRuns<W extends ProductWorld>(
       const report = join(r.dir, 'report.html');
       writeFileSync(report, renderReport(r));
       if (!keepWorld && !gone) await h.destroyWorld(r.worldId).catch(() => undefined);
-      return { ...r, report };
+      return { ...r, report, resultsFile };
     },
 
     overrun(screenId) {
