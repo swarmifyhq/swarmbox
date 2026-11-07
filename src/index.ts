@@ -44,6 +44,13 @@ export {
 } from './runs/run.ts';
 export { openBudget, budgetLimits, type Budget, type BudgetDay, type BudgetLimits } from './runs/budget.ts';
 export { renderReport } from './runs/report.ts';
+export {
+  buildResults,
+  type ResultOutcome,
+  type ResultRow,
+  type ResultsFile,
+  type TesterResult,
+} from './runs/results.ts';
 export { listScenarios, loadScenario, saveScenario, Scenario } from './scenarios/spec.ts';
 export {
   failing,

@@ -109,6 +109,8 @@ describe('the report', () => {
       endedAt: '2026-10-16T10:05:00.000Z',
       cast: [],
       findings: [{ n: 1, at: '2026-10-16T10:01:00.000Z', title: evil, severity: 'major', what: evil }],
+      recheck: [evil],
+      results: [{ ref: 'B-1', outcome: 'held', what: evil, at: '2026-10-16T10:02:00.000Z' }],
       provenance: 'product abc1234',
       checks: { settled: {}, results: [] },
       signals: [{ at: '2026-10-16T10:02:00.000Z', screen: 's1', kind: 'console-error', text: evil }],

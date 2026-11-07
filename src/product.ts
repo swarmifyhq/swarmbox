@@ -7,6 +7,7 @@
 // company or a workspace, served on its own host: `<tenant>.<baseDomain>`, which resolves only inside the
 // browsers Swarmbox launches. A product with no tenants has one.
 
+import type { ResultsFile } from './runs/results.ts';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Page } from 'playwright-core';
 import type { z } from 'zod';
@@ -153,8 +154,10 @@ export interface FindingSink {
   unavailable?: string;
   /** File one finding; returns its id there. */
   file(run: SinkRun, finding: SinkFinding): Promise<string>;
-  /** Register a finished run. */
-  register(run: SinkRun & { endedAt: string; failingChecks: number; reportPath: string }): Promise<void>;
+  /** Register a finished run, with what it said about each thing it was asked to look at. */
+  register(
+    run: SinkRun & { endedAt: string; failingChecks: number; reportPath: string; results: ResultsFile },
+  ): Promise<void>;
 }
 
 export interface SinkRun {
