@@ -5,6 +5,11 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A check can name the bugs it guards, in `guards` on its result. A bug that's fixed has no known red left, so
+  until now no rule could speak for it. A passing guard that looked at something backs a tester's hold in the
+  same run, as its own row, and is no hold by itself. A guard's red counts as came-back for a bug the run was
+  asked about or a tester held.
+
 ## 0.17.0 (2026-11-07)
 
 - A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new
