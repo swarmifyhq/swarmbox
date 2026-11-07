@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.17.0 (2026-11-07)
+
 - A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new
   `result_log` records held, came-back or not-reached with a picture, and `run_end` writes `results.json` beside
   the report. It needs no tracker. Anything on the list that nobody spoke to reads not-reached. A known red that
