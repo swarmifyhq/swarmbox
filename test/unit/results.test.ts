@@ -46,10 +46,19 @@ describe('a run’s results', () => {
     expect(f.results.filter((x) => x.ref === 'B-1')).toHaveLength(1);
   });
 
-  it('takes a known red that now passes as a hold by the check', () => {
+  it('takes a known red that now passes only as backing for a tester’s hold', () => {
+    const c = check({ outcome: 'known-red-now-passes', knownRed: { ref: 'B-1', why: 'x' } });
+    expect(buildResults(run({ results: [tester], checks: [c] })).results).toEqual([
+      expect.objectContaining({ ref: 'B-1', by: 'tester' }),
+      expect.objectContaining({ ref: 'B-1', outcome: 'held', by: 'check', check: 'money.adds-up' }),
+    ]);
+  });
+
+  it('never takes a known red that now passes for a hold by itself: the run may not have gone near it', () => {
     const c = check({ outcome: 'known-red-now-passes', knownRed: { ref: 'B-3', why: 'x' } });
-    expect(buildResults(run({ checks: [c] })).results).toEqual([
-      expect.objectContaining({ ref: 'B-3', outcome: 'held', by: 'check', check: 'money.adds-up' }),
+    expect(buildResults(run({ checks: [c] })).results).toEqual([]);
+    expect(buildResults(run({ recheck: ['B-3'], checks: [c] })).results).toEqual([
+      expect.objectContaining({ ref: 'B-3', outcome: 'not-reached', by: 'nobody' }),
     ]);
   });
 
@@ -62,12 +71,11 @@ describe('a run’s results', () => {
   });
 
   it('keeps both words when a tester and a check disagree', () => {
-    const c = check({ outcome: 'known-red-now-passes', knownRed: { ref: 'B-1', why: 'x' } });
-    const said = { ...tester, outcome: 'came-back' as const };
-    const rows = buildResults(run({ recheck: ['B-1'], results: [said], checks: [c] })).results;
+    const c = check({ outcome: 'known-red', knownRed: { ref: 'B-1', why: 'x' } });
+    const rows = buildResults(run({ recheck: ['B-1'], results: [tester], checks: [c] })).results;
     expect(rows.map((x) => [x.by, x.outcome])).toEqual([
-      ['tester', 'came-back'],
-      ['check', 'held'],
+      ['tester', 'held'],
+      ['check', 'came-back'],
     ]);
   });
 

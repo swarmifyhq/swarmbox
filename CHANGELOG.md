@@ -8,7 +8,8 @@ Unreleased; the release names the version.
 - A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new
   `result_log` records held, came-back or not-reached with a picture, and `run_end` writes `results.json` beside
   the report. It needs no tracker. Anything on the list that nobody spoke to reads not-reached. A known red that
-  now passes is a hold by that check, kept apart from the tester's word.
+  now passes backs a tester's hold in the same run, as its own row, and is no hold by itself: the run may not have
+  gone near it.
 - `FindingSink.register` is given the results as `results`.
 
 ## 0.16.0 (2026-11-05)

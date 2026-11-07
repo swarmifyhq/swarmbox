@@ -55,7 +55,9 @@ export interface ResultsInput {
 
 /**
  * One row per thing said. A check's red only counts against something the run was asked about, since a known
- * red elsewhere is old news. Anything asked about that nobody spoke to wasn't reached: silence is never a hold.
+ * red elsewhere is old news. A known red that now passes may only mean the run never went near it, so it backs
+ * a tester's hold in the same run and is no hold by itself. Anything asked about that nobody spoke to wasn't
+ * reached: silence is never a hold.
  */
 export function buildResults(r: ResultsInput): ResultsFile {
   const rows: ResultRow[] = r.results.map((t) => ({
@@ -68,7 +70,8 @@ export function buildResults(r: ResultsInput): ResultsFile {
   for (const c of r.checks) {
     if (!c.knownRed) continue;
     const ref = c.knownRed.ref;
-    if (c.outcome === 'known-red-now-passes')
+    const saw = r.results.some((t) => t.ref === ref && t.outcome === 'held');
+    if (c.outcome === 'known-red-now-passes' && saw)
       rows.push({
         ref,
         outcome: 'held',
