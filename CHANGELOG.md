@@ -5,6 +5,10 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A phone or tablet screen says what it is: `phone` sends an iPhone's Safari user agent, `tablet` and
+  `tablet-portrait` an iPad's, and a sign-in's own touch viewport the one its shorter side matches. A product that
+  names the device someone signed in on no longer calls every phone a computer.
+
 ## 0.17.0 (2026-11-07)
 
 - A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new
