@@ -113,6 +113,23 @@ describe('a run’s results', () => {
     expect(buildResults(run({ checks: [c] })).results).toEqual([]);
   });
 
+  it('says a ref once per check, however often the check names it', () => {
+    const twice = check({ outcome: 'pass', guards: ['B-1', 'B-1'] });
+    expect(buildResults(run({ results: [tester], checks: [twice] })).results.map((r) => r.by)).toEqual([
+      'tester',
+      'check',
+    ]);
+    const both = check({
+      outcome: 'known-red-now-passes',
+      knownRed: { ref: 'B-1', why: 'x' },
+      guards: ['B-1'],
+    });
+    expect(buildResults(run({ results: [tester], checks: [both] })).results.map((r) => r.by)).toEqual([
+      'tester',
+      'check',
+    ]);
+  });
+
   it('lists every check’s outcome', () => {
     expect(buildResults(run({ checks: [check({})] })).checks).toEqual([
       { id: 'money.adds-up', where: 'north', outcome: 'pass' },

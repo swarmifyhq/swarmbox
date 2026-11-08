@@ -58,7 +58,10 @@ export interface ResultsInput {
  * red elsewhere is old news. A known red that now passes may only mean the run never went near it, so it backs
  * a tester's hold in the same run and is no hold by itself. A check that guards a bug, once the bug is off the
  * known reds, backs a hold the same way when it passed having looked at something, and its red outranks a
- * tester's hold. Anything asked about that nobody spoke to wasn't reached: silence is never a hold.
+ * tester's hold. A guard whose check errored or was skipped says nothing either way, so a hold it would have
+ * backed stands unbacked and needs other proof. Each ref counts once per check: a ref repeated in guards, or one
+ * the same check already names as its known red, adds no second row. Anything asked about that nobody spoke to
+ * wasn't reached: silence is never a hold.
  */
 export function buildResults(r: ResultsInput): ResultsFile {
   const rows: ResultRow[] = r.results.map((t) => ({
@@ -70,7 +73,8 @@ export function buildResults(r: ResultsInput): ResultsFile {
   }));
   const held = (ref: string) => r.results.some((t) => t.ref === ref && t.outcome === 'held');
   for (const c of r.checks) {
-    for (const ref of c.guards ?? []) {
+    for (const ref of new Set(c.guards ?? [])) {
+      if (ref === c.knownRed?.ref) continue;
       if (c.outcome === 'pass' && c.examined > 0 && held(ref))
         rows.push({
           ref,
