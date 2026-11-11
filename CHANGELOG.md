@@ -5,6 +5,9 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `screen_act` can `reload` a page. A `goto` to the address it's already on fetches nothing when only a hash is
+  the same, so it was never a reload, and a tester could read an unchanged page as stuck.
+
 ## 0.17.0 (2026-11-07)
 
 - A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new

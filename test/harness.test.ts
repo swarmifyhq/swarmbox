@@ -422,6 +422,11 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect((await call('screen_requests', { screen, match: '/api/live/stream' })).text).toMatch(
       /GET \/api\/live\/stream\?token=\[redacted\] → failed: cut off by a page load/,
     );
+    // A reload fetches the page again, as a goto to the same hash wouldn't.
+    const loads = async () => (await call('screen_requests', { screen })).text.match(/ document$/gm)!.length;
+    const loaded = await loads();
+    await call('screen_act', { screen, action: { kind: 'reload' } });
+    expect(await loads()).toBe(loaded + 1);
     expect((await call('screen_requests', { screen, match: '/nowhere' })).text).toBe(
       `${screen}: no requests matching "/nowhere"`,
     );
