@@ -157,7 +157,7 @@ export interface HarnessOptions {
   headless?: boolean;
   /** Slows every browser action, so a person can follow along. */
   slowMo?: number;
-  /** Stand-ins run in the operating-system sandbox; "off" only for Swarmbox's own tests where there is none. */
+  /** Stand-ins run in the operating-system sandbox; "off" only on a machine without one (see serve's option). */
   standinSandbox?: 'required' | 'off';
 }
 
@@ -288,7 +288,7 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
    * Read the world's clock, or move it (forward only), through the product's hooks, and bring every screen's
    * browser to the same time: "today" and a byline's date are decided in the browser.
    */
-  moveClock(worldId: string, move?: ClockMove): Promise<ClockState>;
+  moveClock(worldId: string, move?: ClockMove): Promise<ClockMoved>;
   /** Wait for the product's background work to catch up, then run its checks against the world. */
   check(worldId: string): Promise<{ settled: Record<string, Settled>; results: CheckResult[] }>;
   /** The world's hooks, or a refusal saying why there are none. */
@@ -328,6 +328,8 @@ export type Action =
   | { kind: 'press'; key: string }
   /** A path on the tenant's host, or a full link to it (as a text or email gives one), port or not. */
   | { kind: 'goto'; path: string }
+  /** Load the page again. A goto to the address it's on is no reload: a hash that hasn't changed fetches nothing. */
+  | { kind: 'reload' }
   /** Pointer strokes on an element found by its label (a signature pad), as fractions of its box. */
   | { kind: 'draw'; label: string; exact?: boolean; index?: number; strokes?: Stroke[] }
   /**
@@ -557,6 +559,18 @@ async function unnamedControl(
 }
 
 /** Whether a world's clock stands anywhere but on this machine's: moved, or paused. */
+/**
+ * The clock after a read or a move. A jump forward lets the product's background work finish first, and says
+ * what was still outstanding if it didn't: a retry set on the world's time comes due only at the next jump, so
+ * work that would have retried seconds later lands at the jump instead, and reads as the product being late.
+ */
+export interface ClockMoved extends ClockState {
+  /** Per tenant, how the background work stood before a jump forward; absent for a read, a pause or a play. */
+  settledBefore?: Record<string, Settled>;
+  /** Why the background work couldn't be read before the jump, when it couldn't. The clock moved anyway. */
+  settleError?: string;
+}
+
 export function clockMoved(state: ClockState): boolean {
   return state.clock.offsetMs !== 0 || state.clock.frozenAt !== null;
 }
@@ -1306,6 +1320,10 @@ export function createHarness<W extends ProductWorld>(
             await page.goto(path, { waitUntil: 'load' });
             break;
           }
+          case 'reload':
+            did = 'reloaded the page';
+            await page.reload({ waitUntil: 'load' });
+            break;
         }
         // Not networkidle: an app holding an event stream open never lets the network go idle. What this action
         // started is waited for instead: the page's own requests, and any page load, then a moment to render.
@@ -1414,6 +1432,14 @@ export function createHarness<W extends ProductWorld>(
     async moveClock(worldId, move) {
       const w = getWorld(worldId);
       const hooks = await harness.hooks(worldId);
+      const before: Pick<ClockMoved, 'settledBefore' | 'settleError'> = {};
+      if (move && ('jumpMs' in move || 'to' in move)) {
+        try {
+          before.settledBefore = await w.world.settle();
+        } catch (e) {
+          before.settleError = e instanceof Error ? e.message : String(e);
+        }
+      }
       const state = move ? await hooks.moveClock(move) : await hooks.clock();
       // A read brings the screens along too when they don't yet follow a clock that has moved (a kept world
       // resumed with its clock moved before).
@@ -1431,7 +1457,7 @@ export function createHarness<W extends ProductWorld>(
             );
         }
       }
-      return state;
+      return { ...state, ...before };
     },
 
     makeProp: (kind, about) => props.make(kind, about),

@@ -5,6 +5,25 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.18.0 (2026-11-11)
+
+- `serve` takes `standinSandbox`, and reads `SWARMBOX_NO_SANDBOX=1` as "off" when it isn't given. Before, only a
+  product that built its own harness could run stand-ins on a machine without the operating-system sandbox; through
+  `serve`, `run_start` refused with "stand-ins need the operating-system sandbox".
+- A jump of the world's clock waits for the product's background work first, and says what was still
+  outstanding if it didn't catch up. A retry set on the world's time came due only at the next jump, so a text
+  whose first send failed went out at the jump, and read as the product being late. `moveClock` returns
+  `settledBefore` (or `settleError`) for a jump; a read, a pause and a play wait for nothing.
+- `screen_act` can `reload` a page. A `goto` to the address it's already on fetches nothing when only a hash is
+  the same, so it was never a reload, and a tester could read an unchanged page as stuck.
+- A check can name the bugs it guards, in `guards` on its result. A bug that's fixed has no known red left, so
+  until now no rule could speak for it. A passing guard that looked at something backs a tester's hold in the
+  same run, as its own row, and is no hold by itself. A guard's red counts as came-back for a bug the run was
+  asked about or a tester held.
+- A phone or tablet screen says what it is: `phone` sends an iPhone's Safari user agent, `tablet` and
+  `tablet-portrait` an iPad's, and a sign-in's own touch viewport the one its shorter side matches. A product that
+  names the device someone signed in on no longer calls every phone a computer.
+
 ## 0.17.0 (2026-11-07)
 
 - A run can say what became of the things it was asked to look at again. `run_start` takes `recheck`, the new

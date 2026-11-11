@@ -21,7 +21,7 @@ import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
 import { wallClock } from '../time.ts';
-import { HarnessError, refreshTenants, type Action, type Harness } from '../harness.ts';
+import { HarnessError, refreshTenants, type Action, type ClockMoved, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
 import { createRuns, type RunRecord, type Runs, type StartingRun } from '../runs/run.ts';
@@ -247,7 +247,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         return text(
           `${world}: sandbox time ${st.process.at}${st.clock.frozenAt ? ' (paused)' : ''}; offset ${Math.round(st.clock.offsetMs / 1000)} s` +
             (move ? `; ${screensFollowing} screens follow it` : '') +
-            zones.map((z) => `\n  in ${z}: ${wallClock(at, z)}`).join(''),
+            zones.map((z) => `\n  in ${z}: ${wallClock(at, z)}`).join('') +
+            unsettledBeforeJump(st),
         );
       }),
   );
@@ -542,7 +543,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
         'of its box: an edge to resize; default its middle; grabOffset {x, y} px for a handle beside it; a drop ' +
         'off the screen is scrolled to on the way), ' +
-        'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or goto {path} (a ' +
+        'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or reload (a goto to the same address is none), or goto {path} (a ' +
         `path, or a full link on the ${noun}’s host as a text gives it). Elements are found by accessible role and ` +
         'name, as in screen_read, or by role "text" for an element with no role, by its visible text; of several, the one in the open dialog is taken, else each is described for index. ' +
         'Something behind a modal dialog is refused with the dialog’s name. Waits for the requests it started (up ' +
@@ -637,6 +638,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
           }),
           z.object({ kind: z.literal('press'), key: z.string() }),
           z.object({ kind: z.literal('goto'), path: z.string() }),
+          z.object({ kind: z.literal('reload') }),
           z.object({
             kind: z.literal('draw'),
             label: z.string(),
@@ -1135,4 +1137,31 @@ export async function serveMcp<W extends ProductWorld>(
     url: `http://127.0.0.1:${actualPort}/mcp`,
     close: () => new Promise<void>((r) => httpServer.close(() => r())),
   };
+}
+
+/**
+ * What the background work hadn't finished when the clock jumped. Work that was still retrying comes due at the
+ * jump, so anything that shows up late after it may be the jump, not the product: say so where a tester reads it.
+ */
+function unsettledBeforeJump(st: ClockMoved): string {
+  if (st.settleError) return `\n  Before the jump the background work couldn't be read: ${st.settleError}`;
+  const behind = Object.entries(st.settledBefore ?? {}).filter(([, x]) => !x.settled);
+  if (!behind.length) return '';
+  return (
+    '\n  Before the jump the background work hadn’t caught up, so what was outstanding came due at the jump. ' +
+    'Something late just after it may be this, not the product:' +
+    behind
+      .map(
+        ([where, x]) =>
+          x.pending
+            .slice(0, 3)
+            .map(
+              (p) =>
+                `\n    ${where}: ${p.handler} on ${p.type} #${p.seq}, ${p.status ?? 'not picked up'}` +
+                (p.lastError ? `: ${p.lastError.slice(0, 200)}` : ''),
+            )
+            .join('') + (x.pending.length > 3 ? `\n    ${where}: and ${x.pending.length - 3} more` : ''),
+      )
+      .join('')
+  );
 }
