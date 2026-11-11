@@ -79,6 +79,57 @@ describe('a run’s results', () => {
     ]);
   });
 
+  it('takes a check that guards a bug as backing for a tester’s hold, once it has looked at something', () => {
+    const c = check({ outcome: 'pass', examined: 4, guards: ['B-1'] });
+    const rows = buildResults(run({ results: [tester], checks: [c] })).results;
+    expect(rows.map((r) => [r.ref, r.outcome, r.by, r.check])).toEqual([
+      ['B-1', 'held', 'tester', undefined],
+      ['B-1', 'held', 'check', c.id],
+    ]);
+  });
+
+  it('never takes a guard for a hold by itself, or when it looked at nothing', () => {
+    const c = check({ outcome: 'pass', examined: 4, guards: ['B-3'] });
+    expect(buildResults(run({ checks: [c] })).results).toEqual([]);
+    const idle = check({ outcome: 'nothing-to-check', examined: 0, guards: ['B-1'] });
+    expect(buildResults(run({ results: [tester], checks: [idle] })).results.map((r) => r.by)).toEqual([
+      'tester',
+    ]);
+  });
+
+  it('counts a guard’s red against a bug the run was asked about or a tester held', () => {
+    const c = check({
+      outcome: 'fail',
+      guards: ['B-1'],
+      violations: [{ summary: '2 days left open', rows: [] }],
+    });
+    const asked = buildResults(run({ recheck: ['B-1'], checks: [c] })).results;
+    expect(asked.map((r) => [r.outcome, r.by])).toEqual([['came-back', 'check']]);
+    const held = buildResults(run({ results: [tester], checks: [c] })).results;
+    expect(held.map((r) => [r.outcome, r.by])).toEqual([
+      ['held', 'tester'],
+      ['came-back', 'check'],
+    ]);
+    expect(buildResults(run({ checks: [c] })).results).toEqual([]);
+  });
+
+  it('says a ref once per check, however often the check names it', () => {
+    const twice = check({ outcome: 'pass', guards: ['B-1', 'B-1'] });
+    expect(buildResults(run({ results: [tester], checks: [twice] })).results.map((r) => r.by)).toEqual([
+      'tester',
+      'check',
+    ]);
+    const both = check({
+      outcome: 'known-red-now-passes',
+      knownRed: { ref: 'B-1', why: 'x' },
+      guards: ['B-1'],
+    });
+    expect(buildResults(run({ results: [tester], checks: [both] })).results.map((r) => r.by)).toEqual([
+      'tester',
+      'check',
+    ]);
+  });
+
   it('lists every check’s outcome', () => {
     expect(buildResults(run({ checks: [check({})] })).checks).toEqual([
       { id: 'money.adds-up', where: 'north', outcome: 'pass' },
