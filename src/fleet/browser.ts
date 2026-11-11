@@ -196,15 +196,42 @@ export function insideWorld(url: string, options: FleetOptions): boolean {
  * The devices a screen can be. A sign-in's own viewport (a product's tablet app) is the default for that
  * app; a device named when the screen opens wins over it, so the same app can be tried on a phone or turned
  * to portrait. Sizes are CSS pixels of common devices: a 6.1" phone, an 11" tablet each way, a laptop.
+ *
+ * A phone or tablet also says what it is, as Safari on an iPhone or iPad does: without it the browser
+ * says it is a desktop, and a product that names the device a person signed in on (a "new sign-in"
+ * mail, a list of devices) calls every phone a computer. The iPad says "iPad", as Safari does when asked
+ * for the mobile site; its desktop-site default says "Macintosh", which a product tells from a Mac only by
+ * touch points, and the emulated touch screen reports one. The engine is still Chromium: a product that
+ * works around Safari by name would take the workaround here too.
  */
+const IPHONE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
+const IPAD_UA =
+  'Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
 export const DEVICES = {
   desktop: { viewport: { width: 1440, height: 900 } },
   // Big monitors, for layouts that go wrong only as the screen grows.
   'desktop-hd': { viewport: { width: 1920, height: 1080 } },
   'desktop-qhd': { viewport: { width: 2560, height: 1440 } },
-  phone: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 },
-  tablet: { viewport: { width: 1180, height: 820 }, hasTouch: true, deviceScaleFactor: 2 },
-  'tablet-portrait': { viewport: { width: 820, height: 1180 }, hasTouch: true, deviceScaleFactor: 2 },
+  phone: {
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    deviceScaleFactor: 3,
+    userAgent: IPHONE_UA,
+  },
+  tablet: {
+    viewport: { width: 1180, height: 820 },
+    hasTouch: true,
+    deviceScaleFactor: 2,
+    userAgent: IPAD_UA,
+  },
+  'tablet-portrait': {
+    viewport: { width: 820, height: 1180 },
+    hasTouch: true,
+    deviceScaleFactor: 2,
+    userAgent: IPAD_UA,
+  },
 } as const;
 export type Device = keyof typeof DEVICES;
 
@@ -314,7 +341,16 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
       const signIn = who.signIn;
       const localStorage = signIn?.localStorage;
       const viewport = signIn?.viewport;
-      const shape = device ? DEVICES[device] : viewport ? { viewport, hasTouch: true } : {};
+      // A sign-in's own touch screen says it is a phone or a tablet by its shorter side, as DEVICES do.
+      const shape = device
+        ? DEVICES[device]
+        : viewport
+          ? {
+              viewport,
+              hasTouch: true,
+              userAgent: Math.min(viewport.width, viewport.height) < 600 ? IPHONE_UA : IPAD_UA,
+            }
+          : {};
       const origin = originFor(who.persona.tenant);
       const n = nextAddress++;
       const ip = address ?? `198.18.${Math.floor(n / 256) % 256}.${n % 256}`;
