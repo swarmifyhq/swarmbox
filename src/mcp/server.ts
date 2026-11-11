@@ -542,7 +542,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
         'of its box: an edge to resize; default its middle; grabOffset {x, y} px for a handle beside it; a drop ' +
         'off the screen is scrolled to on the way), ' +
-        'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or goto {path} (a ' +
+        'scroll {role, name} into view, or by {x, y} / to top|bottom over that panel (or the page), or reload (a goto to the same address is none), or goto {path} (a ' +
         `path, or a full link on the ${noun}’s host as a text gives it). Elements are found by accessible role and ` +
         'name, as in screen_read, or by role "text" for an element with no role, by its visible text; of several, the one in the open dialog is taken, else each is described for index. ' +
         'Something behind a modal dialog is refused with the dialog’s name. Waits for the requests it started (up ' +
@@ -637,6 +637,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
           }),
           z.object({ kind: z.literal('press'), key: z.string() }),
           z.object({ kind: z.literal('goto'), path: z.string() }),
+          z.object({ kind: z.literal('reload') }),
           z.object({
             kind: z.literal('draw'),
             label: z.string(),

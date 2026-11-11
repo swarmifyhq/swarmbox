@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `screen_act` can `reload` a page. A `goto` to the address it's already on fetches nothing when only a hash is
+  the same, so it was never a reload, and a tester could read an unchanged page as stuck.
 - A check can name the bugs it guards, in `guards` on its result. A bug that's fixed has no known red left, so
   until now no rule could speak for it. A passing guard that looked at something backs a tester's hold in the
   same run, as its own row, and is no hold by itself. A guard's red counts as came-back for a bug the run was

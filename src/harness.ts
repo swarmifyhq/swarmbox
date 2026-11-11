@@ -328,6 +328,8 @@ export type Action =
   | { kind: 'press'; key: string }
   /** A path on the tenant's host, or a full link to it (as a text or email gives one), port or not. */
   | { kind: 'goto'; path: string }
+  /** Load the page again. A goto to the address it's on is no reload: a hash that hasn't changed fetches nothing. */
+  | { kind: 'reload' }
   /** Pointer strokes on an element found by its label (a signature pad), as fractions of its box. */
   | { kind: 'draw'; label: string; exact?: boolean; index?: number; strokes?: Stroke[] }
   /**
@@ -1306,6 +1308,10 @@ export function createHarness<W extends ProductWorld>(
             await page.goto(path, { waitUntil: 'load' });
             break;
           }
+          case 'reload':
+            did = 'reloaded the page';
+            await page.reload({ waitUntil: 'load' });
+            break;
         }
         // Not networkidle: an app holding an event stream open never lets the network go idle. What this action
         // started is waited for instead: the page's own requests, and any page load, then a moment to render.
