@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `screen_act` can `reload` a page. A `goto` to the address it's already on fetches nothing when only a hash is
+  the same, so it was never a reload, and a tester could read an unchanged page as stuck.
 - A phone or tablet screen says what it is: `phone` sends an iPhone's Safari user agent, `tablet` and
   `tablet-portrait` an iPad's, and a sign-in's own touch viewport the one its shorter side matches. A product that
   names the device someone signed in on no longer calls every phone a computer.
