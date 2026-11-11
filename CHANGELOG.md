@@ -5,6 +5,9 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `serve` takes `standinSandbox`, and reads `SWARMBOX_NO_SANDBOX=1` as "off" when it isn't given. Before, only a
+  product that built its own harness could run stand-ins on a machine without the operating-system sandbox; through
+  `serve`, `run_start` refused with "stand-ins need the operating-system sandbox".
 - A jump of the world's clock waits for the product's background work first, and says what was still
   outstanding if it didn't catch up. A retry set on the world's time came due only at the next jump, so a text
   whose first send failed went out at the jump, and read as the product being late. `moveClock` returns

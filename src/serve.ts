@@ -28,6 +28,20 @@ export interface ServeOptions {
   handleSignals?: boolean;
   /** Where to print the addresses; default the console. Null for nothing. */
   log?: ((line: string) => void) | null;
+  /**
+   * Whether the product's stand-ins run in the operating-system sandbox. Default "required", or "off" when the
+   * environment has SWARMBOX_NO_SANDBOX=1: for a machine without one (Linux without bubblewrap). Off, a stand-in
+   * runs with the operator's own rights, so only stand-ins you trust.
+   */
+  standinSandbox?: 'required' | 'off';
+}
+
+/** The stand-in sandbox serve asks for: the option if given, else off only when SWARMBOX_NO_SANDBOX is 1. */
+export function standinSandboxFor(
+  option: ServeOptions['standinSandbox'],
+  env: Record<string, string | undefined> = process.env,
+): 'required' | 'off' {
+  return option ?? (env.SWARMBOX_NO_SANDBOX === '1' ? 'off' : 'required');
 }
 
 export interface Served<W extends ProductWorld> {
@@ -41,12 +55,15 @@ export async function serve<W extends ProductWorld>(
   product: Product<W>,
   options: ServeOptions = {},
 ): Promise<Served<W>> {
-  const harness = createHarness(product, { headless: options.headless ?? false });
+  const sandbox = standinSandboxFor(options.standinSandbox);
+  const harness = createHarness(product, { headless: options.headless ?? false, standinSandbox: sandbox });
   const mcp = await serveMcp(harness, options.mcpPort ?? DEFAULT_PORTS.mcp);
   const room = await serveControlRoom(harness, options.controlRoomPort ?? DEFAULT_PORTS.controlRoom);
   const log = options.log === undefined ? (l: string) => console.log(l) : options.log;
   log?.(`control room  ${room.url}`);
   log?.(`mcp           ${mcp.url}`);
+  if (sandbox === 'off' && product.standins?.length)
+    log?.('stand-ins:    unsandboxed (SWARMBOX_NO_SANDBOX=1 or standinSandbox off)');
   log?.(
     `connect:      claude mcp add --transport http ${options.mcpName ?? `swarmbox-${product.name}`} ${mcp.url}`,
   );
