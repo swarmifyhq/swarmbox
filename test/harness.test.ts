@@ -917,6 +917,42 @@ describe('a world whose hooks have a clock and no feed', () => {
   });
 });
 
+describe('a jump of the clock with background work behind', () => {
+  it('waits for the work first, and says what was outstanding when the clock jumped', async () => {
+    const w = await h.createWorld({ tenants: ['lagging'], options: { behind: true } });
+    try {
+      // A read and a pause wait for nothing.
+      expect((await call('world_clock', { world: w.id })).error).toBe(false);
+      expect((await call('world_clock', { world: w.id, pause: true })).error).toBe(false);
+      expect(w.world.settles).toBe(0);
+      const moved = await call('world_clock', { world: w.id, jumpMs: 600_000 });
+      expect(moved.error, moved.text).toBe(false);
+      expect(w.world.settles).toBe(1);
+      expect(moved.text).toContain('Before the jump the background work hadn’t caught up');
+      expect(moved.text).toContain('lagging: texts.send on text.queued #7, failed: postbox: 503');
+      // The clock moved anyway.
+      expect(Date.parse((await h.moveClock(w.id)).process.at) - Date.now()).toBeGreaterThan(500_000);
+      const st = await h.moveClock(w.id, { to: new Date(Date.now() + 3_600_000).toISOString() });
+      expect(st.settledBefore?.lagging?.settled).toBe(false);
+      expect(w.world.settles).toBe(2);
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+
+  it('says nothing more when the work had caught up', async () => {
+    const w = await h.createWorld({ tenants: ['caughtup'] });
+    try {
+      const moved = await call('world_clock', { world: w.id, jumpMs: 600_000 });
+      expect(moved.error, moved.text).toBe(false);
+      expect(w.world.settles).toBe(1);
+      expect(moved.text).not.toContain('Before the jump');
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+});
+
 describe('a run of a scenario', () => {
   it('casts the scenario’s roles in their apps, logs a finding with its screenshot, and writes the report', async () => {
     saveScenario(

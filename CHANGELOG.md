@@ -5,6 +5,10 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A jump of the world's clock waits for the product's background work first, and says what was still
+  outstanding if it didn't catch up. A retry set on the world's time came due only at the next jump, so a text
+  whose first send failed went out at the jump, and read as the product being late. `moveClock` returns
+  `settledBefore` (or `settleError`) for a jump; a read, a pause and a play wait for nothing.
 - `screen_act` can `reload` a page. A `goto` to the address it's already on fetches nothing when only a hash is
   the same, so it was never a reload, and a tester could read an unchanged page as stuck.
 - A check can name the bugs it guards, in `guards` on its result. A bug that's fixed has no known red left, so
