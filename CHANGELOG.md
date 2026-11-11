@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.18.0 (2026-11-11)
+
 - `serve` takes `standinSandbox`, and reads `SWARMBOX_NO_SANDBOX=1` as "off" when it isn't given. Before, only a
   product that built its own harness could run stand-ins on a machine without the operating-system sandbox; through
   `serve`, `run_start` refused with "stand-ins need the operating-system sandbox".
