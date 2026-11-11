@@ -470,6 +470,8 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(tech.text).toContain('heading "Today"');
     const s = h.screens().find((x) => x.persona.id === 'south-ben')!;
     expect(s.screen.page.viewportSize()).toEqual({ width: 1180, height: 820 });
+    // The app's own tablet screen says it is an iPad, as a device named when it opens does.
+    expect(await s.screen.page.evaluate(() => navigator.userAgent)).toContain('iPad');
 
     const nope = await call('screen_open', { world, person: 'south-ben', app: 'watch' });
     expect(nope.text).toContain('sample has no app watch; its apps: (main), tech');
@@ -525,6 +527,7 @@ describe('a world of a product Swarmbox knows nothing about', () => {
         ...(await s.screen.page.evaluate(() => ({
           touch: matchMedia('(pointer: coarse)').matches,
           dark: matchMedia('(prefers-color-scheme: dark)').matches,
+          says: /iPhone|iPad/.exec(navigator.userAgent)?.[0] ?? 'desktop',
         }))),
       };
     };
@@ -534,18 +537,21 @@ describe('a world of a product Swarmbox knows nothing about', () => {
       height: 844,
       touch: true,
       dark: true,
+      says: 'iPhone',
     });
     // The tablet app turned to portrait: the device wins over the app's own landscape.
     expect(await look({ person: 'south-ben', app: 'tech', device: 'tablet-portrait' })).toMatchObject({
       width: 820,
       height: 1180,
       dark: false,
+      says: 'iPad',
     });
     // A big monitor, for a layout that goes wrong only as the screen grows.
     expect(await look({ person: 'north-ana', device: 'desktop-qhd' })).toMatchObject({
       width: 2560,
       height: 1440,
       touch: false,
+      says: 'desktop',
     });
     const odd = await call('screen_open', { world, person: 'north-ana', device: 'watch' });
     expect(odd.error).toBe(true);
