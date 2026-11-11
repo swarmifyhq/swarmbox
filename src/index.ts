@@ -23,6 +23,7 @@ export {
   HarnessError,
   linkPath,
   type Action,
+  type ClockMoved,
   type Controller,
   type Harness,
   type HarnessOptions,

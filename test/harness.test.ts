@@ -470,6 +470,8 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(tech.text).toContain('heading "Today"');
     const s = h.screens().find((x) => x.persona.id === 'south-ben')!;
     expect(s.screen.page.viewportSize()).toEqual({ width: 1180, height: 820 });
+    // The app's own tablet screen says it is an iPad, as a device named when it opens does.
+    expect(await s.screen.page.evaluate(() => navigator.userAgent)).toContain('iPad');
 
     const nope = await call('screen_open', { world, person: 'south-ben', app: 'watch' });
     expect(nope.text).toContain('sample has no app watch; its apps: (main), tech');
@@ -525,6 +527,7 @@ describe('a world of a product Swarmbox knows nothing about', () => {
         ...(await s.screen.page.evaluate(() => ({
           touch: matchMedia('(pointer: coarse)').matches,
           dark: matchMedia('(prefers-color-scheme: dark)').matches,
+          says: /iPhone|iPad/.exec(navigator.userAgent)?.[0] ?? 'desktop',
         }))),
       };
     };
@@ -534,18 +537,21 @@ describe('a world of a product Swarmbox knows nothing about', () => {
       height: 844,
       touch: true,
       dark: true,
+      says: 'iPhone',
     });
     // The tablet app turned to portrait: the device wins over the app's own landscape.
     expect(await look({ person: 'south-ben', app: 'tech', device: 'tablet-portrait' })).toMatchObject({
       width: 820,
       height: 1180,
       dark: false,
+      says: 'iPad',
     });
     // A big monitor, for a layout that goes wrong only as the screen grows.
     expect(await look({ person: 'north-ana', device: 'desktop-qhd' })).toMatchObject({
       width: 2560,
       height: 1440,
       touch: false,
+      says: 'desktop',
     });
     const odd = await call('screen_open', { world, person: 'north-ana', device: 'watch' });
     expect(odd.error).toBe(true);
@@ -905,6 +911,42 @@ describe('a world whose hooks have a clock and no feed', () => {
       expect(feed.text).toContain('this product serves no /_sandbox/feed hook');
       // The clock it does serve still moves.
       expect((await call('world_clock', { world: w.id, jumpMs: 3_600_000 })).error).toBe(false);
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+});
+
+describe('a jump of the clock with background work behind', () => {
+  it('waits for the work first, and says what was outstanding when the clock jumped', async () => {
+    const w = await h.createWorld({ tenants: ['lagging'], options: { behind: true } });
+    try {
+      // A read and a pause wait for nothing.
+      expect((await call('world_clock', { world: w.id })).error).toBe(false);
+      expect((await call('world_clock', { world: w.id, pause: true })).error).toBe(false);
+      expect(w.world.settles).toBe(0);
+      const moved = await call('world_clock', { world: w.id, jumpMs: 600_000 });
+      expect(moved.error, moved.text).toBe(false);
+      expect(w.world.settles).toBe(1);
+      expect(moved.text).toContain('Before the jump the background work hadn’t caught up');
+      expect(moved.text).toContain('lagging: texts.send on text.queued #7, failed: postbox: 503');
+      // The clock moved anyway.
+      expect(Date.parse((await h.moveClock(w.id)).process.at) - Date.now()).toBeGreaterThan(500_000);
+      const st = await h.moveClock(w.id, { to: new Date(Date.now() + 3_600_000).toISOString() });
+      expect(st.settledBefore?.lagging?.settled).toBe(false);
+      expect(w.world.settles).toBe(2);
+    } finally {
+      await h.destroyWorld(w.id);
+    }
+  });
+
+  it('says nothing more when the work had caught up', async () => {
+    const w = await h.createWorld({ tenants: ['caughtup'] });
+    try {
+      const moved = await call('world_clock', { world: w.id, jumpMs: 600_000 });
+      expect(moved.error, moved.text).toBe(false);
+      expect(w.world.settles).toBe(1);
+      expect(moved.text).not.toContain('Before the jump');
     } finally {
       await h.destroyWorld(w.id);
     }

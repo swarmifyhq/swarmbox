@@ -260,6 +260,8 @@ export interface SampleWorld extends ProductWorld {
   uploads: { tenant: string; name: string; body: Buffer }[];
   /** Each shop's Helcim account and its API's address, when the world has the Helcim stand-in. */
   cards: { api: string; accounts: Map<string, Record<string, string>> } | null;
+  /** How many times something waited for its background work. */
+  settles: number;
 }
 
 async function startSample(
@@ -272,6 +274,7 @@ async function startSample(
   clockAheadMs = 0,
   clockBroken = false,
   noFeed = false,
+  behind = false,
 ): Promise<SampleWorld> {
   // With the Helcim stand-in, each shop has a payments account, for its own pay page.
   const cardAccounts = new Map<string, Record<string, string>>();
@@ -471,6 +474,7 @@ async function startSample(
   });
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
   const actual = (server.address() as AddressInfo).port;
+  let settleCount = 0;
   const hooks: Hooks = hooksFor(`http://127.0.0.1:${actual}/_sandbox`, TOKEN);
   return {
     baseDomain: BASE_DOMAIN,
@@ -500,8 +504,28 @@ async function startSample(
         : { cookies: session(p.id) },
     renewSignIn: async (p) => session(p.id),
     tenantOfPath: (path) => /^\/p\/([a-z0-9-]+)\//.exec(path)?.[1],
-    settle: async (): Promise<Record<string, Settled>> =>
-      Object.fromEntries(tenants.map((t) => [t, { settled: true, ms: 0, pending: [], known: [] }])),
+    get settles() {
+      return settleCount;
+    },
+    // Behind: a text whose first send failed, its retry not yet due, as a retry set on the world's time is.
+    async settle(): Promise<Record<string, Settled>> {
+      settleCount++;
+      const retrying = {
+        seq: 7,
+        type: 'text.queued',
+        handler: 'texts.send',
+        status: 'failed',
+        lastError: 'postbox: 503',
+      };
+      return Object.fromEntries(
+        tenants.map((t) => [
+          t,
+          behind
+            ? { settled: false, ms: 30_000, pending: [retrying], known: [] }
+            : { settled: true, ms: 0, pending: [], known: [] },
+        ]),
+      );
+    },
     check: async (): Promise<CheckResult[]> =>
       tenants.map((t) => {
         const sends = feeds.get(t)!.filter((r) => r.name === 'estimates.send').length;
@@ -551,6 +575,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
         Number(spec.options?.clockAheadMs ?? 0),
         spec.options?.clockBroken === true,
         spec.options?.noFeed === true,
+        spec.options?.behind === true,
       );
     },
     baseDomain: BASE_DOMAIN,
@@ -573,6 +598,7 @@ export function sampleProduct(dirs: { scenarioDir: string; home: string }): Prod
       closed: z.array(z.string()).optional().describe('Shops closed for the season'),
       failStop: z.boolean().optional().describe('Its stop fails, as a product that won’t shut down cleanly'),
       startDelayMs: z.number().optional().describe('Waits this long before starting, as a slow product does'),
+      behind: z.boolean().optional().describe('Its background work never catches up: a text keeps failing'),
     },
     appFor: async (p) => (p.roles.includes('technician') ? 'tech' : undefined),
   };
