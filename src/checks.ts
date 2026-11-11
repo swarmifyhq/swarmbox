@@ -25,6 +25,8 @@ export interface CheckResult {
   error?: string;
   /** A known, ticketed defect this check is red for. */
   knownRed?: { ref: string; why: string };
+  /** Bugs this check keeps from coming back, once they're off the known reds. */
+  guards?: string[];
 }
 
 /** Background work still outstanding when settling gave up: an event a handler has not finished. */
