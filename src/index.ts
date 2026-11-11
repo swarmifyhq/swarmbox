@@ -15,7 +15,7 @@ export type {
   WorldSpec,
 } from './product.ts';
 export { redactBody, redactUrl, type RequestLog, type RequestQuery, type RequestRecord } from './requests.ts';
-export { serve, DEFAULT_PORTS, type ServeOptions, type Served } from './serve.ts';
+export { serve, standinSandboxFor, DEFAULT_PORTS, type ServeOptions, type Served } from './serve.ts';
 export {
   createHarness,
   feedLine,

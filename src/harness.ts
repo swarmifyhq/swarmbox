@@ -157,7 +157,7 @@ export interface HarnessOptions {
   headless?: boolean;
   /** Slows every browser action, so a person can follow along. */
   slowMo?: number;
-  /** Stand-ins run in the operating-system sandbox; "off" only for Swarmbox's own tests where there is none. */
+  /** Stand-ins run in the operating-system sandbox; "off" only on a machine without one (see serve's option). */
   standinSandbox?: 'required' | 'off';
 }
 

@@ -5,6 +5,9 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `serve` takes `standinSandbox`, and reads `SWARMBOX_NO_SANDBOX=1` as "off" when it isn't given. Before, only a
+  product that built its own harness could run stand-ins on a machine without the operating-system sandbox; through
+  `serve`, `run_start` refused with "stand-ins need the operating-system sandbox".
 - `screen_act` can `reload` a page. A `goto` to the address it's already on fetches nothing when only a hash is
   the same, so it was never a reload, and a tester could read an unchanged page as stuck.
 
