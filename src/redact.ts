@@ -197,9 +197,13 @@ const XML_TAG = /<[^<>]*>/g;
 const XML_ATTRIBUTE = /(\s([\w.:-]{1,128})\s{0,16}=\s{0,16})("[^"]*"|'[^']*')/g;
 /** "password": "value" in JSON that could not be read whole (cut short), the value perhaps unfinished. */
 const JSON_PAIR = /("([^"\\]{1,100})"\s*:\s*)"((?:[^"\\]|\\.)*)("?)/g;
+/** "otp": 441723 in JSON: a secret kept as a number. */
+const JSON_NUMBER = /("([^"\\]{1,100})"\s*:\s*)(-?\d[\d.eE+-]*)/g;
 
-/** Text that is not whole JSON or a form: XML and SOAP, JSON cut short, or one token. */
-/** Text with its secrets replaced in place: name/value pairs in JSON or XML, never reshaping it. */
+/**
+ * Text with its secrets replaced in place, never reshaped: name/value pairs in JSON (cut short or whole) and in
+ * XML and SOAP, or the whole of it when it is one token. A download's text is redacted this way.
+ */
 export function redactText(t: string): string {
   let out = t;
   if (out.includes('<')) {
@@ -220,6 +224,9 @@ export function redactText(t: string): string {
   }
   out = out.replace(JSON_PAIR, (m, lead: string, name: string, value: string, end: string) =>
     secretValue(name, value) ? `${lead}"${REDACTED}${end}` : m,
+  );
+  out = out.replace(JSON_NUMBER, (m, lead: string, name: string) =>
+    secretName(name) ? `${lead}"${REDACTED}"` : m,
   );
   return TOKEN_SHAPED.test(out.trim()) && !UUID.test(out.trim()) ? REDACTED : out;
 }

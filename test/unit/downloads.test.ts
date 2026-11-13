@@ -81,6 +81,24 @@ describe('which downloads are text', () => {
     expect(contents('export.json', Buffer.from(raw), false).text).toBe(raw.replace('hunter2', '[redacted]'));
   });
 
+  it('redacts a secret kept as a number, and leaves other numbers as written', () => {
+    const raw = '{"api_key": 123456, "otp":441723, "total": 424.10, "count": 3}';
+    expect(contents('k.json', Buffer.from(raw), false).text).toBe(
+      '{"api_key": "[redacted]", "otp":"[redacted]", "total": 424.10, "count": 3}',
+    );
+  });
+
+  it('redacts the columns of a tab-separated .txt by its header, as a UTF-16 export is', () => {
+    const utf16 = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('name\tPortal Token\tTotal\nAda\tabc123\t4\n', 'utf16le'),
+    ]);
+    expect(contents('export.txt', utf16, false).text).toBe('name\tPortal Token\tTotal\nAda\t[redacted]\t4\n');
+    expect(contents('notes.txt', Buffer.from('a line, with a comma\n'), false).text).toBe(
+      'a line, with a comma\n',
+    );
+  });
+
   it('reads a UTF-8 character cut at the sniffed length as text, and a UTF-16 export by its mark', () => {
     const cut = Buffer.concat([Buffer.from('a'.repeat(64 * 1024 - 1)), Buffer.from('é')]);
     expect(isText('export', cut)).toBe(true);
