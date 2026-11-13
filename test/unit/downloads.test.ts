@@ -9,6 +9,7 @@ import {
   downloadText,
   DOWNLOADS_KEPT,
   isText,
+  source,
   redactTable,
   redactWords,
   TEXT_KEPT,
@@ -21,7 +22,7 @@ const ORIGIN = 'http://north.sample.test:3110';
 function fakeDownload(
   name: string,
   bytes: Buffer | Error,
-  opts: { url?: string; gate?: Promise<void> } = {},
+  opts: { url?: string; gate?: Promise<void>; deleted?: string[] } = {},
 ): Download {
   return {
     suggestedFilename: () => name,
@@ -32,6 +33,7 @@ function fakeDownload(
       return Readable.from([bytes.subarray(0, 3), bytes.subarray(3)]);
     },
     failure: async () => (bytes instanceof Error ? 'canceled' : null),
+    delete: async () => void (opts.deleted && opts.deleted.push(name)),
   } as unknown as Download;
 }
 
@@ -72,6 +74,25 @@ describe('which downloads are text', () => {
     );
     expect(redactTable('name\tPortal Token\nAda\txyz', '\t')).toBe('name\tPortal Token\nAda\t[redacted]');
     expect(redactTable('a,b\n1,2', ',')).toBe('a,b\n1,2');
+  });
+
+  it('keeps a JSON file as the file has it: its spacing, 424.10 and a 20-digit id', () => {
+    const raw = '{\n  "total": 424.10,\n  "id": 12345678901234567890,\n  "password": "hunter2"\n}\n';
+    expect(contents('export.json', Buffer.from(raw), false).text).toBe(raw.replace('hunter2', '[redacted]'));
+  });
+
+  it('reads a UTF-8 character cut at the sniffed length as text, and a UTF-16 export by its mark', () => {
+    const cut = Buffer.concat([Buffer.from('a'.repeat(64 * 1024 - 1)), Buffer.from('é')]);
+    expect(isText('export', cut)).toBe(true);
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('name\tTotal\nAda\t4\n', 'utf16le')]);
+    expect(contents('export.txt', utf16, false).text).toBe('name\tTotal\nAda\t4\n');
+  });
+
+  it('leaves long paths, slugs and numbers alone, and still takes a mixed long run', () => {
+    const kept =
+      '/jobs/1001/invoices/download-final-version-north-2026 the-north-plumbing-and-heating-company-estimate 1234567890123456789012345678901234567890';
+    expect(redactWords(kept)).toBe(kept);
+    expect(redactWords(`k ${'a1B2'.repeat(12)} k`)).toBe('k [redacted] k');
   });
 
   it('cuts text longer than it keeps, and says so', () => {
@@ -138,6 +159,25 @@ describe('a screen’s download log', () => {
     expect(log.records).toHaveLength(DOWNLOADS_KEPT);
     expect(log.records[0]?.seq).toBe(3);
     expect(log.last()).toBe(DOWNLOADS_KEPT + 2);
+  });
+
+  it('shows a page-made blob whole, a data: address by its type and length, and bounds a long address', () => {
+    expect(source('blob:http://north.sample.test:3110/1b4e28ba-2fa1-41d2-883f-0016d3cca427', ORIGIN)).toBe(
+      'blob:http://north.sample.test:3110/1b4e28ba-2fa1-41d2-883f-0016d3cca427',
+    );
+    const data = 'data:text/csv;charset=utf-8,name%2Capi_key%0AAda%2Cabc123secret';
+    expect(source(data, ORIGIN)).toBe(`data:text/csv (${data.length} characters)`);
+    expect(source(`${ORIGIN}/api/x?q=${'a.b'.repeat(140)}`, ORIGIN)).toMatch(/^\/api\/x\?q=(a\.b)+a?\.?…$/);
+    expect(source(`${ORIGIN}/api/x?q=${'a.b'.repeat(140)}`, ORIGIN)).toHaveLength(301);
+  });
+
+  it('deletes the browser’s copy once it is read, or once it failed', async () => {
+    const deleted: string[] = [];
+    const log = downloadLog(ORIGIN);
+    log.onDownload(fakeDownload('a.csv', Buffer.from('x'), { deleted }));
+    log.onDownload(fakeDownload('b.csv', new Error('gone'), { deleted }));
+    await log.settled(0);
+    expect(deleted.sort()).toEqual(['a.csv', 'b.csv']);
   });
 
   it('redacts a secret in another origin’s address', () => {
