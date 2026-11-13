@@ -55,6 +55,7 @@ import {
   type RequestQuery,
   type RequestRecord,
 } from './requests.ts';
+import { downloadLine, downloadLog, type DownloadLog, type DownloadRecord } from './downloads.ts';
 import { isThisMachine } from './standins/guard.ts';
 import { startStandIn, type StandIn } from './standins/runner.ts';
 import {
@@ -113,6 +114,8 @@ export interface ScreenEntry {
   device: DeviceState;
   /** What it asked its servers for, newest last (bounded, secrets redacted). */
   requests: RequestLog;
+  /** What it saved as files, newest last (bounded, secrets in text redacted). */
+  downloads: DownloadLog;
 }
 
 /**
@@ -271,6 +274,8 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
   setNetwork(screenId: string, mode: NetworkMode): Promise<void>;
   /** What a screen asked its servers for, newest last. */
   requests(screenId: string, query?: RequestQuery): RequestRecord[];
+  /** What a screen saved as files, newest last. */
+  downloads(screenId: string): DownloadRecord[];
   screens(): ScreenEntry[];
   screen(screenId: string): ScreenEntry;
   read(screenId: string): Promise<string>;
@@ -892,6 +897,7 @@ export function createHarness<W extends ProductWorld>(
     const cutUrls = new Set<string>();
     const stalled = new Set<Route>();
     const requests = requestLog(w.fleet.originFor(persona.tenant));
+    const downloads = downloadLog(w.fleet.originFor(persona.tenant));
     const signal = (kind: Signal['kind'], text: string, url?: string) => {
       signals.push({
         at: new Date().toISOString(),
@@ -917,6 +923,8 @@ export function createHarness<W extends ProductWorld>(
       ...(options.colorScheme ? { colorScheme: options.colorScheme } : {}),
       onContext: async (ctx) => {
         await setUpDevice(ctx, device, (t) => signal('device', t));
+        // Every page the screen opens, its first and any popup: an export can open in a new tab.
+        ctx.on('page', (p) => p.on('download', (d) => downloads.onDownload(d)));
         ctx.on('console', (m) => {
           // A 4xx is the server refusing something, which the app handles and shows (a conflict, a
           // validation error); Chrome logs each as a console error regardless. 5xx are server-error below.
@@ -986,6 +994,7 @@ export function createHarness<W extends ProductWorld>(
       network: { mode: 'online' },
       device,
       requests,
+      downloads,
       releaseStalled: () => {
         for (const route of stalled) {
           deliberate.add(route.request());
@@ -1120,6 +1129,7 @@ export function createHarness<W extends ProductWorld>(
     screen: getScreen,
 
     requests: (screenId, query) => selectRequests(getScreen(screenId).requests.records, query),
+    downloads: (screenId) => [...getScreen(screenId).downloads.records],
 
     async setNetwork(screenId, mode) {
       const s = getScreen(screenId);
@@ -1155,6 +1165,7 @@ export function createHarness<W extends ProductWorld>(
       const page = s.screen.page;
       const before = await glance(page);
       const since = s.requests.last();
+      const savedBefore = s.downloads.last();
       // From here: what the server does next is what this action caused (or something late finishing). What it
       // did before (an iPad's queue sending once it's back online, another screen's work) is read off now, so
       // it isn't put down to this action.
@@ -1331,6 +1342,8 @@ export function createHarness<W extends ProductWorld>(
       } finally {
         page.off('response', onResponse);
       }
+      // A file the action saved: waited for until it's read, so the readout can say what came out.
+      const saved = s.downloads.last() > savedBefore ? await s.downloads.settled(savedBefore) : [];
       const changed = changes(before, await glance(page));
       let server: string[] = [];
       if (w.feedAt.has(s.persona.tenant)) {
@@ -1358,6 +1371,9 @@ export function createHarness<W extends ProductWorld>(
             ]
           : []),
         ...(refusals.length ? [`refused: ${refusals.join('\n         ')}`] : []),
+        ...(saved.length
+          ? [`downloaded: ${saved.map(downloadLine).join('\n            ')} (screen_downloads)`]
+          : []),
         ...(stillOpen.length
           ? [
               `waiting: still open after ${ACTION_WAIT_MS / 1000} s: ${stillOpen
