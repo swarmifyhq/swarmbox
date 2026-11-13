@@ -20,6 +20,7 @@ import { readInbox } from './inbox.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
+import { downloadLine, downloadText } from '../downloads.ts';
 import { wallClock } from '../time.ts';
 import { HarnessError, refreshTenants, type Action, type ClockMoved, type Harness } from '../harness.ts';
 import { StandInError } from '../standins/runner.ts';
@@ -747,6 +748,33 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
             ? got.map((r) => requestLine(r, now, bodies ?? false)).join('\n')
             : `${screen}: no requests${q.match ? ` matching "${q.match}"` : ''}${q.after !== undefined ? ` after #${q.after}` : ''}`,
         );
+      }),
+  );
+
+  server.registerTool(
+    'screen_downloads',
+    {
+      title: 'Read a screen’s downloads',
+      description:
+        'The files a screen saved (an export, a report, a statement), newest last: name, size, and whether it is ' +
+        'text. Give n to read one: its fingerprint and, for a text file (CSV, JSON, a calendar file…), its ' +
+        'contents, a page at a time from offset. The readout after an action names any file it downloaded. ' +
+        'Secrets in the text are redacted.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        screen: z.string(),
+        n: z.int().min(1).optional().describe('The download’s #number, to read it'),
+        offset: z.int().min(0).optional().describe('Where in its text to start; default 0'),
+      },
+    },
+    async ({ screen, n, offset }) =>
+      guard(async () => {
+        const got = h.downloads(screen);
+        if (n === undefined)
+          return text(got.length ? got.map(downloadLine).join('\n') : `${screen}: no downloads`);
+        const one = got.find((r) => r.seq === n);
+        if (!one) throw new HarnessError(`${screen} has no download #${n}`);
+        return text(downloadText(one, offset ?? 0));
       }),
   );
 

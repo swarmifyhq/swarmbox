@@ -9,6 +9,12 @@ Unreleased; the release names the version.
   writes the whole of it to serve's output. A world whose seed script failed answered `run_start` with only
   "world_seed.py failed (1):", and the traceback below it, which held the cause, reached neither.
 - The README lists what the stand-in sandbox needs on Linux: bubblewrap, socat and ripgrep.
+- A screen's downloads are kept: `screen_downloads` lists the files a screen saved (an export, a report, a
+  statement) and reads a text file's contents a page at a time, and an action that saved one says
+  "downloaded: #1 jobs.csv (2.0 KB, text)". A browser draws nothing for a download, so a tester could press
+  Export and never know what came out, or whether anything did. Each file is read through its stream (a remote
+  browser has no path), fingerprinted, and kept as text up to 500,000 characters. Its secrets are redacted:
+  token-shaped words anywhere in it, and in a CSV or TSV every cell under a secret-named header.
 
 ## 0.18.0 (2026-11-11)
 
