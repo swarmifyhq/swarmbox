@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.19.0 (2026-11-13)
+
 - A tool that fails gives the agent up to 40 lines (4000 characters) of the error, not just its first line, and
   writes the whole of it to serve's output. A world whose seed script failed answered `run_start` with only
   "world_seed.py failed (1):", and the traceback below it, which held the cause, reached neither.
@@ -22,6 +24,13 @@ Unreleased; the release names the version.
   characters. The browser's copy is deleted once read: it sat in the temp folder, which is memory on some
   machines, until the screen closed.
 - A blob: address in `screen_requests` shows whole, not cut to `:3110/<id>`.
+- A secret kept as a number in JSON (`"api_key": 123456`) is redacted, in a download's text and in a request
+  body cut short. A tab-separated download is redacted by its column headers whatever its name, so a
+  spreadsheet's "Unicode text" export (.txt) is, as a .csv or .tsv is.
+- A scenario file Swarmbox can't play says where and why, in words: "…/b.json isn't a scenario Swarmbox can
+  play: cast.0.part: Too big: expected string to have <=80 characters". It used to say only "failed: [", so an
+  agent couldn't tell what to fix. `scenario_list` lists every other scenario and names each file it can't play
+  with that reason; one bad file used to fail the whole list. `readScenarios` returns both.
 
 ## 0.18.0 (2026-11-11)
 
