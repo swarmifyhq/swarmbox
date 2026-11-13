@@ -125,7 +125,9 @@ export function contents(
   const ext = /\.([a-z]+)$/i.exec(name)?.[1]?.toLowerCase() ?? '';
   // Redacted in place, never reparsed: an export's 424.10 and its 20-digit ids are read as the file has them.
   let text = redactText(raw);
-  if (ext === 'csv' || ext === 'tsv') text = redactTable(text, ext === 'tsv' ? '\t' : ',');
+  // A table by its name, or tab-separated text by its first line (a spreadsheet's "Unicode text" is .txt).
+  const sep = ext === 'csv' ? ',' : ext === 'tsv' || /^[^\n]*\t/.test(text) ? '\t' : null;
+  if (sep) text = redactTable(text, sep);
   text = redactWords(text);
   let cut = longer;
   if (text.length > TEXT_KEPT) {

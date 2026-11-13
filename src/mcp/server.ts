@@ -26,7 +26,7 @@ import { HarnessError, refreshTenants, type Action, type ClockMoved, type Harnes
 import { StandInError } from '../standins/runner.ts';
 import type { ProductWorld } from '../product.ts';
 import { createRuns, type RunRecord, type Runs, type StartingRun } from '../runs/run.ts';
-import { listScenarios, loadScenario, saveScenario, Scenario } from '../scenarios/spec.ts';
+import { loadScenario, readScenarios, saveScenario, Scenario } from '../scenarios/spec.ts';
 
 const text = (t: string): CallToolResult => ({ content: [{ type: 'text', text: t }] });
 
@@ -786,13 +786,15 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       annotations: { readOnlyHint: true },
     },
     async () =>
-      guard(async () =>
-        text(
-          listScenarios(runs.scenarioDir)
-            .map((x) => `${x.id}: ${x.title}\n  ${x.goal}`)
-            .join('\n') || 'no scenarios yet',
-        ),
-      ),
+      guard(async () => {
+        const { scenarios, unreadable } = readScenarios(runs.scenarioDir);
+        return text(
+          [
+            ...scenarios.map((x) => `${x.id}: ${x.title}\n  ${x.goal}`),
+            ...unreadable.map((u) => `${u.id}: can't be played. ${u.why}`),
+          ].join('\n') || 'no scenarios yet',
+        );
+      }),
   );
 
   server.registerTool(

@@ -72,11 +72,45 @@ export function listScenarios(dir: string): Scenario[] {
     .map((f) => loadScenario(f.slice(0, -5), dir));
 }
 
+/** A folder's scenarios, and the files in it that aren't one, each with why: one bad file hides no others. */
+export function readScenarios(dir: string): {
+  scenarios: Scenario[];
+  unreadable: { id: string; why: string }[];
+} {
+  const scenarios: Scenario[] = [];
+  const unreadable: { id: string; why: string }[] = [];
+  if (!existsSync(dir)) return { scenarios, unreadable };
+  for (const f of readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .sort()) {
+    const id = f.slice(0, -5);
+    try {
+      scenarios.push(loadScenario(id, dir));
+    } catch (e) {
+      unreadable.push({ id, why: (e as Error).message });
+    }
+  }
+  return { scenarios, unreadable };
+}
+
+/** Zod's issues in one line each: where in the file, and what's wrong. */
+function issues(e: z.ZodError): string {
+  return e.issues.map((i) => `${i.path.join('.') || '(the file)'}: ${i.message}`).join('; ');
+}
+
 export function loadScenario(id: string, dir: string): Scenario {
   Slug.parse(id);
   const file = join(dir, `${id}.json`);
   if (!existsSync(file)) throw new Error(`no scenario ${id} (${file})`);
-  const s = Scenario.parse(JSON.parse(readFileSync(file, 'utf8')));
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (e) {
+    throw new Error(`${file} isn't JSON: ${(e as Error).message}`, { cause: e });
+  }
+  const parsed = Scenario.safeParse(raw);
+  if (!parsed.success) throw new Error(`${file} isn't a scenario Swarmbox can play: ${issues(parsed.error)}`);
+  const s = parsed.data;
   if (s.id !== id) throw new Error(`${file} names itself ${s.id}`);
   return s;
 }

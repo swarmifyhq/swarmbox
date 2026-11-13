@@ -1,13 +1,19 @@
 // Scenarios, the daily budget and the report: the parts that need no world.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { openBudget } from '../../src/runs/budget.ts';
 import { renderReport } from '../../src/runs/report.ts';
 import type { RunRecord } from '../../src/runs/run.ts';
-import { listScenarios, loadScenario, saveScenario, Scenario } from '../../src/scenarios/spec.ts';
+import {
+  listScenarios,
+  loadScenario,
+  readScenarios,
+  saveScenario,
+  Scenario,
+} from '../../src/scenarios/spec.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'swarmbox-scenarios-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -28,6 +34,22 @@ describe('scenarios', () => {
     saveScenario(minimal, { dir });
     expect(listScenarios(dir).map((s) => s.id)).toEqual(['a-test', 'b-test']);
     expect(listScenarios(join(tmp, 'none'))).toEqual([]);
+  });
+
+  it('says where a file breaks the schema, in words, and one bad file hides no others', () => {
+    const dir = mkdtempSync(join(tmp, 'bad-'));
+    saveScenario(minimal, { dir });
+    const bad = { ...minimal, id: 'b-test', cast: [{ role: 'owner', part: 'x'.repeat(105) }] };
+    writeFileSync(join(dir, 'b-test.json'), JSON.stringify(bad));
+    writeFileSync(join(dir, 'c-test.json'), '{ not json');
+    expect(() => loadScenario('b-test', dir)).toThrow(
+      /b-test\.json isn't a scenario Swarmbox can play: cast\.0\.part: .*80/,
+    );
+    const { scenarios, unreadable } = readScenarios(dir);
+    expect(scenarios.map((s) => s.id)).toEqual(['a-test']);
+    expect(unreadable.map((u) => u.id)).toEqual(['b-test', 'c-test']);
+    expect(unreadable[1]!.why).toMatch(/c-test\.json isn't JSON/);
+    expect(readScenarios(join(tmp, 'none'))).toEqual({ scenarios: [], unreadable: [] });
   });
 
   it('takes tenants, a cast member’s tenant and any of the product’s apps', () => {

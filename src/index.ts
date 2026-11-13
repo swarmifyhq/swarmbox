@@ -52,7 +52,7 @@ export {
   type ResultsFile,
   type TesterResult,
 } from './runs/results.ts';
-export { listScenarios, loadScenario, saveScenario, Scenario } from './scenarios/spec.ts';
+export { listScenarios, loadScenario, readScenarios, saveScenario, Scenario } from './scenarios/spec.ts';
 export {
   failing,
   formatReport,
