@@ -5,6 +5,11 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A tool that fails gives the agent up to 40 lines (4000 characters) of the error, not just its first line, and
+  writes the whole of it to serve's output. A world whose seed script failed answered `run_start` with only
+  "world_seed.py failed (1):", and the traceback below it, which held the cause, reached neither.
+- The README lists what the stand-in sandbox needs on Linux: bubblewrap, socat and ripgrep.
+
 ## 0.18.0 (2026-11-11)
 
 - `serve` takes `standinSandbox`, and reads `SWARMBOX_NO_SANDBOX=1` as "off" when it isn't given. Before, only a
