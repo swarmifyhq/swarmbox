@@ -56,6 +56,12 @@ pnpm exec playwright-core install chromium
 
 `playwright-core` is a peer dependency, so your product and Swarmbox share one copy. Node 24 or later.
 
+Stand-ins run in the operating-system sandbox. macOS has what it needs. On Linux, install **bubblewrap**,
+**socat** and **ripgrep** (`apt-get install bubblewrap socat ripgrep`), and on Ubuntu 24.04 or later allow
+unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=0`), as `.github/workflows` does.
+Without them `run_start` refuses and names what's missing. `SWARMBOX_NO_SANDBOX=1` runs stand-ins without the
+sandbox: only on a throwaway machine of your own, never a shared one.
+
 ## Plugging a product in
 
 A product is one object (`Product` in `src/product.ts`): how to start a world, who is in it, how each of

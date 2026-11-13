@@ -192,7 +192,8 @@ A phone call ending (`call_hangup`) belongs to the voice stand-in, as an inbound
 A stand-in is untrusted code, and nothing it does may stop Swarmbox, reach past its world or steer the agent.
 
 - **Each stand-in runs in an operating-system sandbox, with no network at all.** On macOS that's Seatbelt, as
-  Anthropic's open-source sandbox runtime does it; on Linux, bubblewrap. Containers are the fallback.
+  Anthropic's open-source sandbox runtime does it; on Linux, bubblewrap (with socat and ripgrep installed).
+  Containers are the fallback.
   - **Reads are denied by default.** It can read its own package, Node, the kit and its own temporary folder, plus
     on macOS the OpenSSL settings Node reads as it starts. Nothing else on the disk is there for it: not the user's
     files, other temp folders (where worlds keep their database sockets), local databases' data or mounted
