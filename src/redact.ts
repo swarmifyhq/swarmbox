@@ -58,6 +58,8 @@ function secretValue(name: string, value: string): boolean {
 
 /** An address with its secret query values replaced; on `origin`, only its path and query. */
 export function redactUrl(url: string, origin?: string): string {
+  // A blob: address is a page's own object, named by the origin that made it: redacted as that address.
+  if (/^blob:/i.test(url)) return `blob:${redactUrl(url.slice(5))}`;
   let u: URL;
   try {
     u = new URL(url);
@@ -197,7 +199,8 @@ const XML_ATTRIBUTE = /(\s([\w.:-]{1,128})\s{0,16}=\s{0,16})("[^"]*"|'[^']*')/g;
 const JSON_PAIR = /("([^"\\]{1,100})"\s*:\s*)"((?:[^"\\]|\\.)*)("?)/g;
 
 /** Text that is not whole JSON or a form: XML and SOAP, JSON cut short, or one token. */
-function redactText(t: string): string {
+/** Text with its secrets replaced in place: name/value pairs in JSON or XML, never reshaping it. */
+export function redactText(t: string): string {
   let out = t;
   if (out.includes('<')) {
     const { text, sections } = setAsideCdata(out);

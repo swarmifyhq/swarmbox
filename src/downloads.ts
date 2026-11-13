@@ -7,7 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Download } from 'playwright-core';
-import { REDACTED, redactBody, redactUrl, secretName } from './redact.ts';
+import { REDACTED, redactText, redactUrl, secretName } from './redact.ts';
 
 export interface DownloadRecord {
   /** Counts the screen's downloads from 1. */
@@ -37,33 +37,50 @@ export const TEXT_KEPT = 500_000;
 /** The longest a download is waited for after the action that started it. */
 export const DOWNLOAD_WAIT_MS = 30_000;
 
-/** Files whose bytes are text, by name; anything else is text only if it reads as UTF-8 with no NUL. */
+/** Files whose bytes are text, by name; anything else is text only if it reads as UTF-8. */
 const TEXT_NAMES = /\.(csv|tsv|txt|json|xml|ics|vcf|html?|md|iif|ofx|qbo|qfx|log|ya?ml)$/i;
-const TYPE_BY_NAME: Record<string, string> = { json: 'application/json', xml: 'application/xml' };
+/** How far into a file without a text name its UTF-8 is checked. */
+const SNIFF = 64 * 1024;
+
+/**
+ * A file's text, or null when it isn't text: UTF-16 by its byte-order mark (a spreadsheet's "Unicode text"
+ * export holds NULs, so it's looked for first), else UTF-8 with no NUL. A character cut at the end of what's
+ * checked or kept is still text.
+ */
+export function decodeText(name: string, bytes: Buffer): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes);
+  if (bytes.includes(0)) return null;
+  if (!TEXT_NAMES.test(name)) {
+    try {
+      // stream: a multi-byte character cut at SNIFF is held back, not an error.
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, SNIFF), { stream: true });
+    } catch {
+      return null;
+    }
+  }
+  return new TextDecoder('utf-8').decode(bytes);
+}
 
 /** Whether these bytes are a text file's. */
 export function isText(name: string, bytes: Buffer): boolean {
-  if (bytes.includes(0)) return false;
-  if (TEXT_NAMES.test(name)) return true;
-  try {
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, 64 * 1024));
-    return true;
-  } catch {
-    // A multi-byte character cut at 64 KB is still text; anything else isn't.
-    return false;
-  }
+  return decodeText(name, bytes) !== null;
 }
 
 /**
- * A word that is a token by its shape wherever it sits in a file: a JWT, a provider's secret key, or a long run
- * of key characters. A body is redacted only when it is one token (redact.ts); a file is mostly not secret, so
- * its words are looked at one by one.
+ * A word that is a token by its shape wherever it sits in a file: a JWT or a provider's secret key, and a long
+ * run of key characters that mixes letters and digits and isn't a path. A body is redacted only when it is one
+ * token (redact.ts); a file is mostly not secret, so its words are looked at one by one. Best effort: a
+ * fingerprint or a slug with numbers in it reads as a token, and a short key (32 hex characters) doesn't.
  */
-const TOKEN_WORD =
-  /\beyJ[\w-]+\.[\w-]+\.[\w-]*|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}|\bwhsec_[A-Za-z0-9]{8,}|(?<![\w+/=-])[A-Za-z0-9_+/=-]{40,}(?![\w+/=-])/g;
+const KNOWN_TOKEN =
+  /\beyJ[\w-]+\.[\w-]+\.[\w-]*|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}|\bwhsec_[A-Za-z0-9]{8,}/g;
+const LONG_RUN = /(?<![\w+/=-])[A-Za-z0-9_+/=-]{40,}(?![\w+/=-])/g;
 
 export function redactWords(text: string): string {
-  return text.replace(TOKEN_WORD, REDACTED);
+  return text
+    .replace(KNOWN_TOKEN, REDACTED)
+    .replace(LONG_RUN, (w) => (w.startsWith('/') || !/\d/.test(w) || !/[A-Za-z]/.test(w) ? w : REDACTED));
 }
 
 /** A row's cells, split on `sep` outside quotes (a quoted cell holding a line break is read as two rows). */
@@ -103,9 +120,11 @@ export function contents(
   bytes: Buffer,
   longer: boolean,
 ): Pick<DownloadRecord, 'text' | 'cut' | 'binary'> {
-  if (!isText(name, bytes)) return { binary: true };
+  const raw = decodeText(name, bytes);
+  if (raw === null) return { binary: true };
   const ext = /\.([a-z]+)$/i.exec(name)?.[1]?.toLowerCase() ?? '';
-  let text = redactBody(bytes.toString('utf8'), TYPE_BY_NAME[ext] ?? '');
+  // Redacted in place, never reparsed: an export's 424.10 and its 20-digit ids are read as the file has them.
+  let text = redactText(raw);
   if (ext === 'csv' || ext === 'tsv') text = redactTable(text, ext === 'tsv' ? '\t' : ',');
   text = redactWords(text);
   let cut = longer;
@@ -114,6 +133,20 @@ export function contents(
     cut = true;
   }
   return { text, ...(cut ? { cut } : {}) };
+}
+
+/** The longest "from" address shown. */
+const URL_SHOWN = 300;
+
+/**
+ * Where a download came from, for its line: a path on the screen's own origin, else the whole address, secrets
+ * redacted and bounded. A data: address is the file itself, so only its type and length are shown.
+ */
+export function source(url: string, origin: string): string {
+  const data = /^data:([^,;]*)/i.exec(url);
+  if (data) return `data:${data[1] || 'text/plain'} (${url.length} characters)`;
+  const shown = redactUrl(url, origin);
+  return shown.length > URL_SHOWN ? `${shown.slice(0, URL_SHOWN)}…` : shown;
 }
 
 export interface DownloadLog {
@@ -151,6 +184,8 @@ export function downloadLog(origin: string): DownloadLog {
       rec.state = 'failed';
       rec.failure = (await d.failure().catch(() => null)) ?? (e as Error).message.split('\n')[0];
     }
+    // Read, so the browser's copy goes: it sits in the temp folder, which is memory on some machines.
+    await d.delete().catch(() => {});
   };
   return {
     records,
@@ -160,7 +195,7 @@ export function downloadLog(origin: string): DownloadLog {
         seq: ++seq,
         at: new Date().toISOString(),
         name: d.suggestedFilename(),
-        url: redactUrl(d.url(), origin),
+        url: source(d.url(), origin),
         state: 'saving',
       };
       records.push(rec);

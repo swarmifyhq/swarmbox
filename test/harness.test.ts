@@ -452,6 +452,17 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(file).not.toContain('sk_live_');
     expect(file).not.toContain('eeee');
     expect((await call('screen_downloads', { screen, n: 2 })).text).toBe(`${screen} has no download #2`);
+    // A file the page made itself, from a blob: address, as Flowology's payroll export is.
+    const payroll = await call('screen_act', {
+      screen,
+      action: { kind: 'click', role: 'button', name: 'Export payroll' },
+    });
+    expect(payroll.text).toMatch(
+      /downloaded: #2 payroll\.csv \([\d.]+ B, text\) from blob:http:\/\/north\.sample\.test:\d+\/[0-9a-f-]{36} \(screen_downloads\)/,
+    );
+    expect((await call('screen_downloads', { screen, n: 2 })).text).toMatch(
+      /---\nname,hours,pay\nAna,40\.00,1024\.10\n$/,
+    );
     await call('screen_close', { screen });
   });
 

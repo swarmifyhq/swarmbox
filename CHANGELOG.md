@@ -15,6 +15,13 @@ Unreleased; the release names the version.
   Export and never know what came out, or whether anything did. Each file is read through its stream (a remote
   browser has no path), fingerprinted, and kept as text up to 500,000 characters. Its secrets are redacted:
   token-shaped words anywhere in it, and in a CSV or TSV every cell under a secret-named header.
+  A download's text is the file as it is: redacted in place, never reparsed, so a JSON export's `424.10` and
+  its 20-digit ids read as written. A UTF-16 export (a spreadsheet's "Unicode text") is read by its byte-order
+  mark. A long run of key characters is redacted only when it mixes letters and digits and isn't a path. A page's
+  own blob: file shows its address whole; a data: one shows only its type and length; any address is cut at 300
+  characters. The browser's copy is deleted once read: it sat in the temp folder, which is memory on some
+  machines, until the screen closed.
+- A blob: address in `screen_requests` shows whole, not cut to `:3110/<id>`.
 
 ## 0.18.0 (2026-11-11)
 
