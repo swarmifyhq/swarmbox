@@ -428,6 +428,13 @@ const between = (a: { x: number; y: number }, b: { x: number; y: number }, steps
  * hide that. Says how far the element moved meanwhile.
  */
 export async function draw(page: Page, el: Locator, strokes: Stroke[] = SIGNATURE): Promise<Drawn> {
+  // A point off the element, or not a number, is refused before anything is pressed: sent half way through a
+  // stroke it fails there, and leaves the browser's mouse with no position for anything after it.
+  const bad = strokes.flat().find(([x, y]) => !(x >= 0 && x <= 1 && y >= 0 && y <= 1));
+  if (bad)
+    throw new Error(
+      `a stroke's point [${bad.join(', ')}] is not inside the element (each is a fraction, 0 to 1)`,
+    );
   await el.scrollIntoViewIfNeeded({ timeout: 10_000 });
   const box = await el.boundingBox({ timeout: 10_000 });
   if (!box) throw new Error('it has no size on screen');
@@ -446,30 +453,38 @@ export async function draw(page: Page, el: Locator, strokes: Stroke[] = SIGNATUR
       type,
       touchPoints: p ? [{ x: Math.round(p.x), y: Math.round(p.y), id: 1 }] : [],
     });
+  // Whether a finger or the button is down: a stroke that fails half way still lifts it, so the page isn't left
+  // mid-gesture (a pad still drawing, a page still being dragged) for whatever the screen does next.
+  let down = false;
   try {
     for (const stroke of strokes) {
       if (!stroke.length) continue;
       const first = at(stroke[0]!);
       if (cdp) {
         await touchAt('touchStart', first);
+        down = true;
         let from = first;
         for (const p of stroke.slice(1)) {
           const q = at(p);
           for (const r of between(from, q, 6)) await touchAt('touchMove', r);
           from = q;
         }
+        down = false;
         await touchAt('touchEnd');
       } else {
         await page.mouse.move(first.x, first.y);
         await page.mouse.down();
+        down = true;
         for (const p of stroke.slice(1)) {
           const q = at(p);
           await page.mouse.move(q.x, q.y, { steps: 6 });
         }
+        down = false;
         await page.mouse.up();
       }
     }
   } finally {
+    if (down) await (cdp ? touchAt('touchEnd') : page.mouse.up()).catch(() => undefined);
     await cdp?.detach().catch(() => undefined);
   }
   // A scroll the gesture started may still be settling.

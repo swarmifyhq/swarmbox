@@ -5,6 +5,10 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `draw` refuses a stroke with a point outside the element, or not a number, before pressing anything. Sent half
+  way through a stroke, such a point failed there and left the page mid-gesture, and the browser's mouse with no
+  position for whatever came next. A stroke that fails for another reason still lifts the finger or the button.
+
 ## 0.20.0 (2026-11-14)
 
 - `screen_act` `draw` signs with a finger on a phone or tablet screen: real touches through Chromium's input, so the
