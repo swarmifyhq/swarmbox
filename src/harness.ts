@@ -1315,10 +1315,15 @@ export function createHarness<W extends ProductWorld>(
               action.index,
             );
             await reachable(t.el, what);
-            did = `drew on "${action.label}"${t.why ? `, ${t.why}` : ''}`;
-            await draw(page, t.el, action.strokes).catch((e: unknown) => {
+            const drawn = await draw(page, t.el, action.strokes).catch((e: unknown) => {
               throw new HarnessError(`could not draw on ${what}: ${(e as Error).message}`);
             });
+            did =
+              `drew on "${action.label}" with ${drawn.by === 'finger' ? 'a finger' : 'the mouse'}` +
+              (t.why ? `, ${t.why}` : '') +
+              (drawn.scrolled
+                ? `; it moved ${drawn.scrolled}px on screen while being drawn on (the touch scrolled the page)`
+                : '');
             break;
           }
           case 'press':

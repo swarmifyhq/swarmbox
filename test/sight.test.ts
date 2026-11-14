@@ -176,4 +176,51 @@ describe('drawing', () => {
     });
     expect(inked).toBeGreaterThan(100);
   });
+
+  // On a phone the strokes are a finger's, so a pad that lets touch scroll the page shows it, as a customer's
+  // phone does (Flowology QA-1660). A mouse never scrolls a page, so drawing with one would hide that bug.
+  const PAD = (touchAction: string) => `<div style="height:1500px">Approve</div>
+    <canvas id="sig" width="300" height="120" aria-label="Signature pad" style="touch-action:${touchAction}"></canvas>
+    <div style="height:1500px"></div>
+    <script>
+      const c = document.getElementById('sig'); const x = c.getContext('2d'); let on = false;
+      window.strokes = 0; window.kinds = new Set();
+      c.addEventListener('pointerdown', (e) => { on = true; window.strokes++; window.kinds.add(e.pointerType); x.beginPath(); x.moveTo(e.offsetX, e.offsetY); });
+      c.addEventListener('pointermove', (e) => { if (on) { x.lineTo(e.offsetX, e.offsetY); x.stroke(); } });
+      c.addEventListener('pointerup', () => (on = false));
+      c.addEventListener('pointercancel', () => (on = false));
+    </script>`;
+  const phone = async () =>
+    (
+      await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+      })
+    ).newPage();
+
+  it('signs with a finger on a touch screen, and the page stays put when the pad holds the touch', async () => {
+    const p = await phone();
+    await p.setContent(PAD('none'));
+    const got = await draw(p, p.getByLabel('Signature pad'));
+    expect(got).toEqual({ by: 'finger', scrolled: 0 });
+    const seen = await p.evaluate(() => {
+      const w = window as unknown as { strokes: number; kinds: Set<string> };
+      return { strokes: w.strokes, kinds: [...w.kinds] };
+    });
+    expect(seen).toEqual({ strokes: 2, kinds: ['touch'] });
+  });
+
+  it('says how far the page moved when a finger on the pad scrolls it instead of drawing', async () => {
+    const p = await phone();
+    await p.setContent(PAD('auto'));
+    const got = await draw(p, p.getByLabel('Signature pad'));
+    expect(got.by).toBe('finger');
+    expect(got.scrolled).toBeGreaterThan(10);
+  });
+
+  it('draws with the mouse on a desktop', async () => {
+    await page.setContent(PAD('auto'));
+    expect(await draw(page, page.getByLabel('Signature pad'))).toEqual({ by: 'mouse', scrolled: 0 });
+  });
 });
