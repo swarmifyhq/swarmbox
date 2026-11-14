@@ -219,6 +219,27 @@ describe('drawing', () => {
     expect(got.scrolled).toBeGreaterThan(10);
   });
 
+  // A stroke with a point off the pad, or not a number, is refused before anything is pressed: sent half way, it
+  // left the page mid-gesture, and a mouse with no position for anything after it (Troy, #50 review).
+  for (const device of ['phone', 'desktop'] as const)
+    it(`refuses a stroke with a bad point before pressing anything (${device})`, async () => {
+      const p = device === 'phone' ? await phone() : page;
+      await p.setContent(PAD('none'));
+      for (const point of [Number.NaN, 1.5, -0.1]) {
+        const bad: [number, number][][] = [
+          [
+            [0.1, 0.5],
+            [point, 0.5],
+          ],
+        ];
+        await expect(draw(p, p.getByLabel('Signature pad'), bad)).rejects.toThrow(/not inside the element/);
+      }
+      expect(await p.evaluate(() => (window as unknown as { strokes: number }).strokes)).toBe(0);
+      // and the next drawing still works
+      expect((await draw(p, p.getByLabel('Signature pad'))).scrolled).toBe(0);
+      expect(await p.evaluate(() => (window as unknown as { strokes: number }).strokes)).toBe(2);
+    });
+
   it('draws with the mouse on a desktop', async () => {
     await page.setContent(PAD('auto'));
     expect(await draw(page, page.getByLabel('Signature pad'))).toEqual({ by: 'mouse', scrolled: 0 });
