@@ -45,6 +45,10 @@ Built for Swarmify's agents, and usable by any team whose product runs locally. 
   start of what was sent and what came back, and what it keeps open (a live stream). An action's "refused:" line
   gives each refusal's number, with the server's reason (`error.message`, or FastAPI's `detail`). No headers are
   kept, and secrets in addresses and bodies are redacted.
+- **A screen's downloads** (`screen_downloads`): the files it saved (an export, a report, a statement), with
+  name, size and fingerprint, and a text file's contents a page at a time. An action's "downloaded:" line names
+  each file it saved. Secrets in the text are redacted: token-shaped words anywhere, and in a CSV or TSV every
+  cell under a secret-named header.
 - **A daily budget** in browser-minutes and runs.
 
 ## Install
@@ -55,6 +59,12 @@ pnpm exec playwright-core install chromium
 ```
 
 `playwright-core` is a peer dependency, so your product and Swarmbox share one copy. Node 24 or later.
+
+Stand-ins run in the operating-system sandbox. macOS has what it needs. On Linux, install **bubblewrap**,
+**socat** and **ripgrep** (`apt-get install bubblewrap socat ripgrep`), and on Ubuntu 24.04 or later allow
+unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=0`), as `.github/workflows` does.
+Without them `run_start` refuses and names what's missing. `SWARMBOX_NO_SANDBOX=1` runs stand-ins without the
+sandbox: only on a throwaway machine of your own, never a shared one.
 
 ## Plugging a product in
 

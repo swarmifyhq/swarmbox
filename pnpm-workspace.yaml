@@ -1,0 +1,7 @@
+# Advisory fixes for transitive dependencies; each is the patched version, pinned.
+overrides:
+  node-forge: 1.4.3
+  '@anthropic-ai/sandbox-runtime>zod': 4.6.7
+  follow-redirects: 1.16.3
+  minimatch@10: 11.0.1
+  '@hono/node-server@2.1.5': 2.1.6

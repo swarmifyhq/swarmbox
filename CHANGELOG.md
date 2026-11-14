@@ -5,6 +5,33 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.19.0 (2026-11-13)
+
+- A tool that fails gives the agent up to 40 lines (4000 characters) of the error, not just its first line, and
+  writes the whole of it to serve's output. A world whose seed script failed answered `run_start` with only
+  "world_seed.py failed (1):", and the traceback below it, which held the cause, reached neither.
+- The README lists what the stand-in sandbox needs on Linux: bubblewrap, socat and ripgrep.
+- A screen's downloads are kept: `screen_downloads` lists the files a screen saved (an export, a report, a
+  statement) and reads a text file's contents a page at a time, and an action that saved one says
+  "downloaded: #1 jobs.csv (2.0 KB, text)". A browser draws nothing for a download, so a tester could press
+  Export and never know what came out, or whether anything did. Each file is read through its stream (a remote
+  browser has no path), fingerprinted, and kept as text up to 500,000 characters. Its secrets are redacted:
+  token-shaped words anywhere in it, and in a CSV or TSV every cell under a secret-named header.
+  A download's text is the file as it is: redacted in place, never reparsed, so a JSON export's `424.10` and
+  its 20-digit ids read as written. A UTF-16 export (a spreadsheet's "Unicode text") is read by its byte-order
+  mark. A long run of key characters is redacted only when it mixes letters and digits and isn't a path. A page's
+  own blob: file shows its address whole; a data: one shows only its type and length; any address is cut at 300
+  characters. The browser's copy is deleted once read: it sat in the temp folder, which is memory on some
+  machines, until the screen closed.
+- A blob: address in `screen_requests` shows whole, not cut to `:3110/<id>`.
+- A secret kept as a number in JSON (`"api_key": 123456`) is redacted, in a download's text and in a request
+  body cut short. A tab-separated download is redacted by its column headers whatever its name, so a
+  spreadsheet's "Unicode text" export (.txt) is, as a .csv or .tsv is.
+- A scenario file Swarmbox can't play says where and why, in words: "…/b.json isn't a scenario Swarmbox can
+  play: cast.0.part: Too big: expected string to have <=80 characters". It used to say only "failed: [", so an
+  agent couldn't tell what to fix. `scenario_list` lists every other scenario and names each file it can't play
+  with that reason; one bad file used to fail the whole list. `readScenarios` returns both.
+
 ## 0.18.0 (2026-11-11)
 
 - `serve` takes `standinSandbox`, and reads `SWARMBOX_NO_SANDBOX=1` as "off" when it isn't given. Before, only a
