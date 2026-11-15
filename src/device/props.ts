@@ -6,9 +6,9 @@
 // told apart by its sha256.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, open, rename, rm } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { constants, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdir, open, realpath, rename, rm } from 'node:fs/promises';
+import { basename, extname, join, resolve } from 'node:path';
 import type { ProductFile } from '../product.ts';
 import { chromium, type Browser } from 'playwright-core';
 
@@ -109,6 +109,7 @@ async function copyRegularFile(
   from: string,
   to: string,
   name: string,
+  max: number,
 ): Promise<{ bytes: number; sha256: string }> {
   let source;
   try {
@@ -121,7 +122,13 @@ async function copyRegularFile(
   try {
     const st = await source.stat();
     if (!st.isFile()) throw new PropError(`${name} isn't a regular file`);
-    if (st.size > FILE_MAX_BYTES) throw new PropError(tooBig(name, st.size));
+    // O_NOFOLLOW covers the last part of the path only: a folder on the way may be a link, and a file may have
+    // other names (a hard link). Either way it may be a file the world never made.
+    if ((await realpath(from)) !== resolve(from))
+      throw new PropError(`${name} is reached through a link; a world offers its files themselves`);
+    if (st.nlink > 1)
+      throw new PropError(`${name} has other names (a hard link); a world offers a file of its own`);
+    if (st.size > max) throw new PropError(tooBig(name, st.size, max));
     const hash = createHash('sha256');
     let bytes = 0;
     const out = await open(to, 'wx');
@@ -129,7 +136,7 @@ async function copyRegularFile(
       const chunk = Buffer.alloc(2 ** 20);
       for (let n; (n = (await source.read(chunk, 0, chunk.length, null)).bytesRead) > 0;) {
         bytes += n;
-        if (bytes > FILE_MAX_BYTES) throw new PropError(tooBig(name, bytes));
+        if (bytes > max) throw new PropError(tooBig(name, bytes, max));
         hash.update(chunk.subarray(0, n));
         await out.write(chunk, 0, n);
       }
@@ -142,16 +149,64 @@ async function copyRegularFile(
   }
 }
 
-const tooBig = (name: string, bytes: number) =>
-  `${name} is over ${Math.floor(bytes / 2 ** 20)} MB; a prop is at most ${FILE_MAX_BYTES / 2 ** 20} MB`;
+const mb = (bytes: number) => `${Math.round((bytes / 2 ** 20) * 10) / 10} MB`;
+const tooBig = (name: string, bytes: number, max: number) =>
+  `${name} is over ${mb(bytes)}; a prop is at most ${mb(max)}`;
+
+/** The one file of a world's offer with this name, or a refusal that says why there isn't one. */
+export function chooseOffered(world: string, offered: ProductFile[], name: string): ProductFile {
+  const named = offered.filter((x) => x.name === name);
+  if (named.length > 1)
+    throw new PropError(
+      `${world} offers ${named.length} files named "${name}"; its product must name them apart`,
+    );
+  if (!named.length)
+    throw new PropError(
+      `${world} offers no file "${name}"; it offers ${offered.map((x) => x.name).join(', ') || 'none'}`,
+    );
+  return named[0]!;
+}
+
+/** The largest world file a screen's camera is shown: each page with the camera open gets all of it. */
+export const CAMERA_MAX_BYTES = 8 * 2 ** 20;
+
+/** Why a prop can't go in front of a screen's camera in this world, or null when it can. */
+export function cameraRefusal(prop: Prop, screenWorld: string, max = CAMERA_MAX_BYTES): string | null {
+  if (prop.kind !== 'file') return null;
+  if (prop.world !== screenWorld)
+    return `${prop.id} is ${prop.world}'s file; this screen is in ${screenWorld}`;
+  if (!prop.mime.startsWith('image/'))
+    return `${prop.id} is ${prop.name}, not a picture: a camera can't show it; file_pick it`;
+  // Every page with the camera open is sent the whole picture, as a data URL.
+  if (prop.bytes > max) return `${prop.id} is ${mb(prop.bytes)}; a camera shows at most ${mb(max)}`;
+  return null;
+}
+
+/** Limits on a world's files, for tests to set small. */
+export interface FileLimits {
+  /** The largest one. */
+  fileMax: number;
+  /** All kept at once. */
+  totalMax: number;
+}
+
+/** A taken file, and any older ones removed to make room for it (from any world). */
+export interface Taken {
+  prop: Prop;
+  evicted: Prop[];
+}
+
+/** Leftovers older than this in the props folder, from a harness that was killed, go when the next one starts. */
+const STALE_MS = 12 * 3600_000;
 
 export interface PropMaker {
   make(kind: Exclude<PropKind, 'file'>, about: string): Promise<Prop>;
   /**
    * Copy a file a world offers (ProductWorld.files) in as a prop, under its own name. Only a regular file, never
-   * through a link; at most FILE_MAX_BYTES. Refusals are PropErrors, which name no host path.
+   * through a link; at most FILE_MAX_BYTES. Refusals are PropErrors, which name no host path. Takes run one at a
+   * time, so copies in flight never pass the limits together.
    */
-  take(world: string, file: ProductFile): Promise<Prop>;
+  take(world: string, file: ProductFile): Promise<Taken>;
   /** Remove a world's files, when the world stops. */
   dropWorld(world: string): void;
   get(id: string): Prop;
@@ -160,8 +215,23 @@ export interface PropMaker {
 }
 
 /** Makes props into `dir`, drawing them in a headless Chromium of its own, started the first time it's needed. */
-export function propMaker(dir: string): PropMaker {
+export function propMaker(
+  dir: string,
+  limits: FileLimits = { fileMax: FILE_MAX_BYTES, totalMax: FILES_TOTAL_MAX_BYTES },
+): PropMaker {
   const props = new Map<string, Prop>();
+  // A harness that was killed left its props behind; a running one's are newer than this.
+  try {
+    for (const f of readdirSync(dir))
+      if (f.startsWith('prop_') && Date.now() - statSync(join(dir, f)).mtimeMs > STALE_MS)
+        rmSync(join(dir, f), { recursive: true, force: true });
+  } catch {
+    /* no folder yet */
+  }
+  // One take at a time; and each world's drops counted, so a copy that finishes after its world stopped goes.
+  let takes: Promise<unknown> = Promise.resolve();
+  const drops = new Map<string, number>();
+  let closed = false;
   let browser: Promise<Browser> | undefined;
   // Drawn offline: the HTML is static and escaped, and there's still no reason for this browser to reach anything.
   const page = async () =>
@@ -185,6 +255,56 @@ export function propMaker(dir: string): PropMaker {
     }
     return prop;
   };
+
+  async function takeOne(world: string, f: ProductFile): Promise<Taken> {
+    if (closed) throw new PropError('Swarmbox is shutting down');
+    const name = f.name;
+    if (!name || name === '.' || name === '..' || basename(name) !== name || name.includes('\0'))
+      throw new PropError(`a world's file needs a plain name, not "${name}"`);
+    const dropsBefore = drops.get(world) ?? 0;
+    const id = `prop_${randomBytes(4).toString('hex')}`;
+    const folder = join(dir, id);
+    // In a folder of its own, so the file keeps its name: a chooser given a path names the file by it.
+    const path = join(folder, name);
+    let copied: { bytes: number; sha256: string };
+    try {
+      await mkdir(folder, { recursive: true });
+      copied = await copyRegularFile(f.path, `${path}.part`, name, limits.fileMax);
+      await rename(`${path}.part`, path);
+      if ((drops.get(world) ?? 0) !== dropsBefore || closed)
+        throw new PropError(
+          closed ? 'Swarmbox is shutting down' : `${world} stopped while ${name} was copied`,
+        );
+    } catch (e) {
+      await rm(folder, { recursive: true, force: true });
+      if (e instanceof PropError) throw e;
+      // An fs error names host paths: the agent gets the name and the code only.
+      throw new PropError(`could not take ${name}: ${(e as NodeJS.ErrnoException).code ?? 'failed'}`);
+    }
+    const prop = keep({
+      id,
+      kind: 'file',
+      about: f.about.trim().slice(0, 300) || name,
+      file: path,
+      name,
+      mime: f.mime ?? MIME[extname(name).toLowerCase()] ?? 'application/octet-stream',
+      ...copied,
+      tag: `world-file:${world}/${name}`,
+      world,
+    });
+    // Copies are large: past the total, the oldest world files go (from any world), never the one just taken.
+    const evicted: Prop[] = [];
+    let total = [...props.values()].filter((p) => p.kind === 'file').reduce((n, p) => n + p.bytes, 0);
+    for (const old of [...props.values()]) {
+      if (total <= limits.totalMax) break;
+      if (old.kind !== 'file' || old.id === prop.id) continue;
+      props.delete(old.id);
+      remove(old);
+      evicted.push(old);
+      total -= old.bytes;
+    }
+    return { prop, evicted };
+  }
 
   return {
     async make(kind, about) {
@@ -251,48 +371,13 @@ export function propMaker(dir: string): PropMaker {
       };
       return keep(prop);
     },
-    async take(world, f) {
-      const name = f.name;
-      if (!name || name === '.' || name === '..' || basename(name) !== name || name.includes('\0'))
-        throw new PropError(`a world's file needs a plain name, not "${name}"`);
-      const id = `prop_${randomBytes(4).toString('hex')}`;
-      const folder = join(dir, id);
-      // In a folder of its own, so the file keeps its name: a chooser given a path names the file by it.
-      const path = join(folder, name);
-      let copied: { bytes: number; sha256: string };
-      try {
-        await mkdir(folder, { recursive: true });
-        copied = await copyRegularFile(f.path, `${path}.part`, name);
-        await rename(`${path}.part`, path);
-      } catch (e) {
-        await rm(folder, { recursive: true, force: true });
-        if (e instanceof PropError) throw e;
-        // An fs error names host paths: the agent gets the name and the code only.
-        throw new PropError(`could not take ${name}: ${(e as NodeJS.ErrnoException).code ?? 'failed'}`);
-      }
-      const prop = keep({
-        id,
-        kind: 'file',
-        about: f.about.trim().slice(0, 300) || name,
-        file: path,
-        name,
-        mime: f.mime ?? MIME[extname(name).toLowerCase()] ?? 'application/octet-stream',
-        ...copied,
-        tag: `world-file:${world}/${name}`,
-        world,
-      });
-      // Copies are large: past FILES_TOTAL_MAX_BYTES, the oldest world files go, never the one just taken.
-      let total = [...props.values()].filter((p) => p.kind === 'file').reduce((n, p) => n + p.bytes, 0);
-      for (const old of [...props.values()]) {
-        if (total <= FILES_TOTAL_MAX_BYTES) break;
-        if (old.kind !== 'file' || old.id === prop.id) continue;
-        props.delete(old.id);
-        remove(old);
-        total -= old.bytes;
-      }
-      return prop;
+    take(world, f) {
+      const run = takes.then(() => takeOne(world, f));
+      takes = run.catch(() => undefined);
+      return run;
     },
     dropWorld(world) {
+      drops.set(world, (drops.get(world) ?? 0) + 1);
       for (const p of [...props.values()])
         if (p.kind === 'file' && p.world === world) {
           props.delete(p.id);
@@ -306,6 +391,9 @@ export function propMaker(dir: string): PropMaker {
     },
     list: () => [...props.values()],
     async close() {
+      closed = true;
+      // A copy in flight finishes (or fails) first, then goes with the rest.
+      await takes;
       const b = await browser?.catch(() => undefined);
       browser = undefined;
       await b?.close();

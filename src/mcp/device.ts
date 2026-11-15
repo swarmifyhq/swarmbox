@@ -76,7 +76,13 @@ export function registerDeviceTools<W extends ProductWorld>(
         'to a file chooser. Taken again, it is a new prop: the file as the world has it now.',
       inputSchema: { world: z.string(), name: z.string().min(1).max(200) },
     },
-    async ({ world, name }) => guard(async () => text(describe(await h.takeFile(world, name)))),
+    async ({ world, name }) =>
+      guard(async () => {
+        const { prop, evicted } = await h.takeFile(world, name);
+        // Room is made from the oldest copies, any world's: say which went, so a queued pick of one isn't a surprise.
+        const went = evicted.map((p) => `${p.id} (${p.world}'s ${p.name})`).join(', ');
+        return text(describe(prop) + (went ? `\nTo make room, removed: ${went}` : ''));
+      }),
   );
 
   server.registerTool(

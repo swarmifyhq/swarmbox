@@ -12,11 +12,16 @@ Unreleased; the release names the version.
   drawn prop. It carries no tag inside (it is the world's own bytes); its sha256 tells it apart.
   - Only a regular file is copied, never through a link (a link, a folder, a pipe or a device is refused), up to
     512 MB counted on the copy, without blocking other worlds. A refusal names the file, never a host path.
-  - Copies live in `<home>/props/<prop id>/` and go when their world stops; past 2 GB of them, the oldest go.
-  - A world's file can be picked only on that world's screens. `camera_show` refuses one that isn't a picture
-    (by its mime), or is over 8 MB. Two offered files with the same name are refused, not guessed between.
+  - Copies live in `<home>/props/<prop id>/` and go when their world stops; past 2 GB of them, the oldest go (from
+    any world), and `prop_take` says which. Takes run one at a time, so copies in flight never pass the limits
+    together; a copy that finishes after its world stopped, or as Swarmbox shuts down, goes at once. Leftovers older
+    than 12 hours (a harness that was killed) are cleared when the next one starts.
+  - A file reached through a linked folder, or with a second name (a hard link), is refused too.
+  - A world's file can be picked, or shown on a camera, only on that world's screens. `camera_show` refuses one
+    that isn't a picture (by its mime), or is over 8 MB. Two offered files with the same name are refused, not guessed between.
   - For TypeScript: `PropKind` gains `'file'`, and `makeProp` / `PropMaker.make` take `Exclude<PropKind, 'file'>`
-    (a file is taken, not made); `PropMaker.take` and `dropWorld` are new.
+    (a file is taken, not made); `PropMaker.take` (returning `{prop, evicted}`) and `dropWorld` are new, and
+    `propMaker` takes optional `FileLimits`.
 
 ## 0.20.0 (2026-11-14)
 
