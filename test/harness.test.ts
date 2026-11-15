@@ -188,6 +188,33 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await call('screen_close', { screen });
   });
 
+  it('hands a file the world offers to a file chooser, by its own name and bytes', async () => {
+    expect((await call('world_files', { world })).text).toBe(
+      'jobs-export.zip: an export of last year’s jobs from the old system',
+    );
+    const missing = await call('prop_take', { world, name: 'payroll.zip' });
+    expect(missing.text).toMatch(/offers no file "payroll.zip"; it offers jobs-export.zip/);
+    const taken = await call('prop_take', { world, name: 'jobs-export.zip' });
+    expect(taken.text).toMatch(
+      /^prop_[0-9a-f]{8}: \w+'s file, "an export of last year’s jobs from the old system" \(jobs-export.zip, application\/zip/,
+    );
+    const id = /^(prop_[0-9a-f]{8})/.exec(taken.text)![1]!;
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'north-ana' })).text,
+    )![1]!;
+    // Not a picture: a camera can't show it.
+    expect((await call('camera_show', { screen, prop: id })).text).toMatch(/not a picture/);
+    await call('file_pick', { screen, prop: id });
+    await h.screen(screen).screen.page.getByLabel('Import jobs').click();
+    await expect
+      .poll(() => h.screen(screen).screen.page.locator('#device').textContent())
+      .toBe('Uploaded jobs-export.zip');
+    const uploaded = h.world(world).world.uploads.at(-1)!;
+    expect(uploaded.name).toBe('jobs-export.zip');
+    expect(uploaded.body.toString()).toMatch(/^PK made-up jobs export for /);
+    await call('screen_close', { screen });
+  });
+
   it('plays a provider’s pages in the browser at the provider’s own address: a card form that pays', async () => {
     const made = await call('world_create', { tenants: ['south'], standins: ['helcim'] });
     const w = /^(w\d+)/.exec(made.text)![1]!;

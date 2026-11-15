@@ -46,7 +46,7 @@ import {
   type Stroke,
 } from './fleet/sight.ts';
 import { HooksMissing, type ClockMove, type ClockState, type FeedItem, type Hooks } from './hooks.ts';
-import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import type { Persona, Product, ProductFile, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
 import {
   pendingSince,
   requestLog,
@@ -299,8 +299,12 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
   /** The world's hooks, or a refusal saying why there are none. */
   hooks(worldId: string): Promise<Hooks>;
   /** Make a prop: a photo, a document or a signature, tagged with its id. */
-  makeProp(kind: PropKind, about: string): Promise<Prop>;
+  makeProp(kind: Exclude<PropKind, 'file'>, about: string): Promise<Prop>;
   props(): Prop[];
+  /** The files a world offers for upload (ProductWorld.files); none when the product offers none. */
+  worldFiles(worldId: string): Promise<ProductFile[]>;
+  /** Take one of a world's files, by name, as a prop. */
+  takeFile(worldId: string, name: string): Promise<Prop>;
   /** Queue a prop for the screen's next file chooser (a camera button on a phone or tablet is one). */
   pickFile(screenId: string, propId: string): Prop;
   /** Put a prop in front of the screen's camera; null for nothing. */
@@ -1483,6 +1487,21 @@ export function createHarness<W extends ProductWorld>(
 
     makeProp: (kind, about) => props.make(kind, about),
     props: () => props.list(),
+    async worldFiles(worldId) {
+      const w = getWorld(worldId).world;
+      return w.files ? await w.files() : [];
+    },
+    async takeFile(worldId, name) {
+      const w = getWorld(worldId).world;
+      if (!w.files) throw new HarnessError(`${product.name} offers no files for upload; prop_make draws one`);
+      const offered = await w.files();
+      const f = offered.find((x) => x.name === name);
+      if (!f)
+        throw new HarnessError(
+          `${worldId} offers no file "${name}"; it offers ${offered.map((x) => x.name).join(', ') || 'none'}`,
+        );
+      return props.take(worldId, f);
+    },
     pickFile(screenId, propId) {
       const s = getScreen(screenId);
       const prop = props.get(propId);
@@ -1491,7 +1510,12 @@ export function createHarness<W extends ProductWorld>(
     },
     async showCamera(screenId, propId) {
       const s = getScreen(screenId);
-      showOnCamera(s.device, propId ? props.get(propId) : null);
+      const prop = propId ? props.get(propId) : null;
+      if (prop?.kind === 'file' && !prop.mime.startsWith('image/'))
+        throw new HarnessError(
+          `${prop.id} is ${prop.name}, not a picture: a camera can't show it; file_pick it`,
+        );
+      showOnCamera(s.device, prop);
     },
     async setLocation(screenId, latitude, longitude) {
       await setLocation(getScreen(screenId).screen.context, latitude, longitude);

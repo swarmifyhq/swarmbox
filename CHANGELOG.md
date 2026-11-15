@@ -5,6 +5,13 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A world can offer files for upload that Swarmbox can't draw: an export from another system, a bank file, a
+  spreadsheet to import. `ProductWorld.files()` returns `{name, path, about, mime?}` (`ProductFile`); the agent lists
+  them with `world_files {world}` and takes one with `prop_take {world, name}`, which copies it in as a prop of kind
+  `file`. `file_pick` then gives it to a file chooser under its own name, by path, so it can be larger than a
+  drawn prop (up to 512 MB). It carries no tag inside (it is the world's own bytes); its sha256 tells it apart.
+  `camera_show` refuses a file that isn't a picture.
+
 ## 0.20.0 (2026-11-14)
 
 - `screen_act` `draw` signs with a finger on a phone or tablet screen: real touches through Chromium's input, so the

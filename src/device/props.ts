@@ -1,17 +1,48 @@
 // Props (docs/standins.md, The device and props): things a person makes or carries, a photo of the job, a vendor's
 // bill as a PDF, a signature. Swarmbox makes them, so a world never needs a real person's files, and tags each one
 // with its id, so a check can later tell which arrived where: visibly in a corner, and inside the file itself (a
-// JPEG comment, a PNG text chunk, a line of the PDF's text).
+// JPEG comment, a PNG text chunk, a line of the PDF's text). A world can also offer files Swarmbox can't draw (an
+// export from another system: ProductWorld.files); taken as a prop, such a file is copied as it is, untagged, and
+// told apart by its sha256.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  closeSync,
+  copyFileSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, extname, join } from 'node:path';
+import type { ProductFile } from '../product.ts';
 import { chromium, type Browser } from 'playwright-core';
 
-export type PropKind = 'photo' | 'document' | 'signature';
+export type PropKind = 'photo' | 'document' | 'signature' | 'file';
 
 /** Props kept at once; past it the oldest go, with their files. */
 export const PROPS_KEPT = 200;
+
+/** The largest file a world can hand over as a prop. */
+export const FILE_MAX_BYTES = 512 * 2 ** 20;
+
+const MIME: Record<string, string> = {
+  '.zip': 'application/zip',
+  '.pdf': 'application/pdf',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.eml': 'message/rfc822',
+  '.pst': 'application/vnd.ms-outlook',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+};
 
 export interface Prop {
   id: string;
@@ -23,8 +54,10 @@ export interface Prop {
   mime: string;
   bytes: number;
   sha256: string;
-  /** The tag inside the file: `swarmbox-prop:<id>`. */
+  /** The tag inside the file: `swarmbox-prop:<id>`. A world's file carries none: `world-file:<world>/<name>`. */
   tag: string;
+  /** For a world's file: the world that offered it. */
+  world?: string;
   /** The colour a photo is drawn in, so a frame of it on a screen can be told apart. */
   colour?: string;
 }
@@ -69,8 +102,23 @@ export function withPngText(png: Buffer, keyword: string, text: string): Buffer 
   return Buffer.concat([png.subarray(0, IHDR_END), chunk, png.subarray(IHDR_END)]);
 }
 
+/** A file's sha256, read a megabyte at a time: a world's file can be large. */
+function sha256Of(path: string): string {
+  const hash = createHash('sha256');
+  const chunk = Buffer.alloc(2 ** 20);
+  const fd = openSync(path, 'r');
+  try {
+    for (let n; (n = readSync(fd, chunk)) > 0;) hash.update(chunk.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
 export interface PropMaker {
-  make(kind: PropKind, about: string): Promise<Prop>;
+  make(kind: Exclude<PropKind, 'file'>, about: string): Promise<Prop>;
+  /** Copy a file a world offers (ProductWorld.files) in as a prop, under its own name. */
+  take(world: string, file: ProductFile): Prop;
   get(id: string): Prop;
   list(): Prop[];
   close(): Promise<void>;
@@ -89,6 +137,19 @@ export function propMaker(dir: string): PropMaker {
         offline: true,
       })
     ).newPage();
+
+  const remove = (p: Prop) =>
+    rmSync(p.kind === 'file' ? join(dir, p.id) : p.file, { recursive: true, force: true });
+  const keep = (prop: Prop): Prop => {
+    props.set(prop.id, prop);
+    // At most PROPS_KEPT: the oldest go, with their files.
+    while (props.size > PROPS_KEPT) {
+      const [oldest, old] = props.entries().next().value!;
+      props.delete(oldest);
+      remove(old);
+    }
+    return prop;
+  };
 
   return {
     async make(kind, about) {
@@ -153,14 +214,33 @@ export function propMaker(dir: string): PropMaker {
         tag,
         ...(kind === 'photo' ? { colour } : {}),
       };
-      props.set(id, prop);
-      // At most PROPS_KEPT: the oldest go, with their files.
-      while (props.size > PROPS_KEPT) {
-        const [oldest, old] = props.entries().next().value!;
-        props.delete(oldest);
-        rmSync(old.file, { force: true });
-      }
-      return prop;
+      return keep(prop);
+    },
+    take(world, f) {
+      const name = basename(f.name);
+      if (!name || name !== f.name) throw new Error(`a world's file needs a plain name, not "${f.name}"`);
+      const size = statSync(f.path).size;
+      if (size > FILE_MAX_BYTES)
+        throw new Error(
+          `${name} is ${Math.round(size / 2 ** 20)} MB; a prop is at most ${FILE_MAX_BYTES / 2 ** 20} MB`,
+        );
+      const id = `prop_${randomBytes(4).toString('hex')}`;
+      // In a folder of its own, so the file keeps its name: a chooser given a path names the file by it.
+      const path = join(dir, id, name);
+      mkdirSync(join(dir, id), { recursive: true });
+      copyFileSync(f.path, path);
+      return keep({
+        id,
+        kind: 'file',
+        about: f.about.trim().slice(0, 300) || name,
+        file: path,
+        name,
+        mime: f.mime ?? MIME[extname(name).toLowerCase()] ?? 'application/octet-stream',
+        bytes: size,
+        sha256: sha256Of(path),
+        tag: `world-file:${world}/${name}`,
+        world,
+      });
     },
     get(id) {
       const prop = props.get(id);
@@ -173,7 +253,7 @@ export function propMaker(dir: string): PropMaker {
       browser = undefined;
       await b?.close();
       // A world's props are for its run: none outlive the harness.
-      for (const p of props.values()) rmSync(p.file, { force: true });
+      for (const p of props.values()) remove(p);
       props.clear();
     },
   };

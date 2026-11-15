@@ -145,7 +145,26 @@ export interface ProductWorld {
    * secrets.
    */
   log?(opts: { lines: number; match?: string }): string[];
+  /**
+   * Files the world offers a person to upload that Swarmbox can't draw: an export from another system, a bank
+   * file, a spreadsheet the product imports. Made up, made for this world (a fixture generator's output). An agent
+   * lists them with world_files and takes one with prop_take; file_pick then gives it to a file chooser, under its
+   * own name. Never a real person's or customer's file.
+   */
+  files?(): ProductFile[] | Promise<ProductFile[]>;
   stop(): Promise<void>;
+}
+
+/** A file a world offers for upload (ProductWorld.files). */
+export interface ProductFile {
+  /** The name a person's file chooser gives it: what the product sees uploaded. */
+  name: string;
+  /** Where it is on this machine. Swarmbox copies it when taken, so the world can't change it afterwards. */
+  path: string;
+  /** What it is, for the agent: "a Purview export of 16 mailboxes, one corrupt item". */
+  about: string;
+  /** Default: from the name's extension, else application/octet-stream. */
+  mime?: string;
 }
 
 /** Where a run's findings go besides its report: a tracker, an issue list. */
