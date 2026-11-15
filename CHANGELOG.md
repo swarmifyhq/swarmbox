@@ -5,10 +5,6 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
-- `draw` refuses a stroke with a point outside the element, or not a number, before pressing anything. Sent half
-  way through a stroke, such a point failed there and left the page mid-gesture, and the browser's mouse with no
-  position for whatever came next. A stroke that fails for another reason still lifts the finger or the button.
-
 ## 0.20.0 (2026-11-14)
 
 - `screen_act` `draw` signs with a finger on a phone or tablet screen: real touches through Chromium's input, so the
@@ -16,6 +12,9 @@ Unreleased; the release names the version.
   mouse, which never scrolls a page, so a signature pad that lets a finger scroll the page instead of drawing
   looked fine. The action's answer now says which was used and, when it happened, how far the pad moved on screen
   ("the touch scrolled the page"). `draw()` returns `{ by: 'finger' | 'mouse', scrolled }`.
+- `draw` refuses a stroke with a point outside the element, or not a number, before pressing anything. Sent half
+  way through a stroke, such a point failed there and left the page mid-gesture, and the browser's mouse with no
+  position for whatever came next. A stroke that fails for another reason still lifts the finger or the button.
 
 ## 0.19.0 (2026-11-13)
 
