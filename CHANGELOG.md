@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.21.0 (2026-11-15)
+
 - A world can offer files for upload that Swarmbox can't draw: an export from another system, a bank file, a
   spreadsheet to import. `ProductWorld.files()` returns `{name, path, about, mime?}` (`ProductFile`); the agent lists
   them with `world_files {world}` and takes one with `prop_take {world, name}`, which copies it in as a prop of kind
