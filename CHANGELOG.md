@@ -14,9 +14,12 @@ Unreleased; the release names the version.
     512 MB counted on the copy, without blocking other worlds. A refusal names the file, never a host path.
   - Copies live in `<home>/props/<prop id>/` and go when their world stops; past 2 GB of them, the oldest go (from
     any world), and `prop_take` says which. Takes run one at a time, so copies in flight never pass the limits
-    together; a copy that finishes after its world stopped, or as Swarmbox shuts down, goes at once. Leftovers older
-    than 12 hours (a harness that was killed) are cleared when the next one starts.
-  - A file reached through a linked folder, or with a second name (a hard link), is refused too.
+    together, and each copies for at most 10 minutes. A take asked for before its world stopped, or as Swarmbox
+    shuts down, is refused, or its copy removed once done.
+  - A harness marks its props folder (`.harness-<pid>`). At start it clears `prop_` leftovers older than 12 hours
+    (from a harness that was killed), entry by entry, unless another live harness shares the folder.
+  - The file itself must not be a link, nor have a second name (a hard link). Folders on its path are followed (on
+    macOS the temp folder sits under one), so offer files from a folder the product can't put links in.
   - A world's file can be picked, or shown on a camera, only on that world's screens. `camera_show` refuses one
     that isn't a picture (by its mime), or is over 8 MB. Two offered files with the same name are refused, not guessed between.
   - For TypeScript: `PropKind` gains `'file'`, and `makeProp` / `PropMaker.make` take `Exclude<PropKind, 'file'>`
