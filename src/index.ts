@@ -6,6 +6,7 @@ export type {
   FindingSink,
   Persona,
   Product,
+  ProductFile,
   ProductWorld,
   SignIn,
   SinkFinding,

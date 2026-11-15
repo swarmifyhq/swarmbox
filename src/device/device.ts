@@ -103,7 +103,12 @@ export async function setUpDevice(
       note('a file chooser opened and nothing was picked: file_pick puts a prop in it');
       return;
     }
-    await chooser.setFiles({ name: prop.name, mimeType: prop.mime, buffer: readFileSync(prop.file) });
+    // A world's file goes by its path (it can be larger than a buffer may be), and keeps its name that way.
+    await chooser.setFiles(
+      prop.kind === 'file'
+        ? prop.file
+        : { name: prop.name, mimeType: prop.mime, buffer: readFileSync(prop.file) },
+    );
     note(`picked ${prop.id} (${prop.kind}: ${prop.about}) in a file chooser`);
   };
   const watch = (page: Page) =>
