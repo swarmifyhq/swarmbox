@@ -561,7 +561,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       description:
         'Do one thing on a screen: click {role, name} (button right for a right click, clickCount 2 for a double ' +
         'click), fill {label, text}, select {label, option}, press {key}, ' +
-        'draw {label} (pointer strokes, e.g. a signature pad; strokes default to a signature), drag {role, name} ' +
+        'draw {label} (strokes, e.g. a signature pad; a finger on a phone or tablet, the mouse on a desktop; says if the touch scrolled the page; strokes default to a signature), drag {role, name} ' +
         'onto another element (to {role, name, at}) or by a distance (by {x, y} CSS px), held at grab (fractions ' +
         'of its box: an edge to resize; default its middle; grabOffset {x, y} px for a handle beside it; a drop ' +
         'off the screen is scrolled to on the way), ' +

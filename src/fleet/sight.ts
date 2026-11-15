@@ -407,23 +407,91 @@ export const SIGNATURE: Stroke[] = [
   ],
 ];
 
-/** Draws strokes on an element with the pointer, as a finger or a mouse would: down, moves, up. */
-export async function draw(page: Page, el: Locator, strokes: Stroke[] = SIGNATURE): Promise<void> {
+/** How a drawing went: with a finger (a touch screen) or the mouse, and how far it moved the element on screen. */
+export interface Drawn {
+  by: 'finger' | 'mouse';
+  /** CSS pixels the element moved while being drawn on: a finger that scrolled the page instead of drawing. */
+  scrolled: number;
+}
+
+/** Points between two, so a stroke moves as a finger does, not in one jump. */
+const between = (a: { x: number; y: number }, b: { x: number; y: number }, steps: number) =>
+  Array.from({ length: steps }, (_, i) => ({
+    x: a.x + ((b.x - a.x) * (i + 1)) / steps,
+    y: a.y + ((b.y - a.y) * (i + 1)) / steps,
+  }));
+
+/**
+ * Draws strokes on an element as the screen's person would: with a finger on a touch screen (a phone or tablet),
+ * the mouse otherwise; each stroke is down, moves, up. A finger's strokes are real touches, so a pad that lets
+ * touch scroll the page moves the page, as it does on a customer's phone; a mouse never scrolls a page and would
+ * hide that. Says how far the element moved meanwhile.
+ */
+export async function draw(page: Page, el: Locator, strokes: Stroke[] = SIGNATURE): Promise<Drawn> {
+  // A point off the element, or not a number, is refused before anything is pressed: sent half way through a
+  // stroke it fails there, and leaves the browser's mouse with no position for anything after it.
+  const bad = strokes.flat().find(([x, y]) => !(x >= 0 && x <= 1 && y >= 0 && y <= 1));
+  if (bad)
+    throw new Error(
+      `a stroke's point [${bad.join(', ')}] is not inside the element (each is a fraction, 0 to 1)`,
+    );
   await el.scrollIntoViewIfNeeded({ timeout: 10_000 });
   const box = await el.boundingBox({ timeout: 10_000 });
   if (!box) throw new Error('it has no size on screen');
   const at = ([x, y]: [number, number]) => ({ x: box.x + x * box.width, y: box.y + y * box.height });
-  for (const stroke of strokes) {
-    if (!stroke.length) continue;
-    const first = at(stroke[0]!);
-    await page.mouse.move(first.x, first.y);
-    await page.mouse.down();
-    for (const p of stroke.slice(1)) {
-      const q = at(p);
-      await page.mouse.move(q.x, q.y, { steps: 6 });
+  const touch = await page.evaluate(() => navigator.maxTouchPoints > 0).catch(() => false);
+  // Touches go in through Chromium's own input, the way a screen's touches do, so the page's gestures (a scroll,
+  // a pinch) happen as on a device. Another engine, or no protocol session, draws with the mouse.
+  const cdp = touch
+    ? await page
+        .context()
+        .newCDPSession(page)
+        .catch(() => null)
+    : null;
+  const touchAt = (type: 'touchStart' | 'touchMove' | 'touchEnd', p?: { x: number; y: number }) =>
+    cdp!.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: p ? [{ x: Math.round(p.x), y: Math.round(p.y), id: 1 }] : [],
+    });
+  // Whether a finger or the button is down: a stroke that fails half way still lifts it, so the page isn't left
+  // mid-gesture (a pad still drawing, a page still being dragged) for whatever the screen does next.
+  let down = false;
+  try {
+    for (const stroke of strokes) {
+      if (!stroke.length) continue;
+      const first = at(stroke[0]!);
+      if (cdp) {
+        await touchAt('touchStart', first);
+        down = true;
+        let from = first;
+        for (const p of stroke.slice(1)) {
+          const q = at(p);
+          for (const r of between(from, q, 6)) await touchAt('touchMove', r);
+          from = q;
+        }
+        down = false;
+        await touchAt('touchEnd');
+      } else {
+        await page.mouse.move(first.x, first.y);
+        await page.mouse.down();
+        down = true;
+        for (const p of stroke.slice(1)) {
+          const q = at(p);
+          await page.mouse.move(q.x, q.y, { steps: 6 });
+        }
+        down = false;
+        await page.mouse.up();
+      }
     }
-    await page.mouse.up();
+  } finally {
+    if (down) await (cdp ? touchAt('touchEnd') : page.mouse.up()).catch(() => undefined);
+    await cdp?.detach().catch(() => undefined);
   }
+  // A scroll the gesture started may still be settling.
+  if (cdp) await page.waitForTimeout(150);
+  const after = await el.boundingBox({ timeout: 10_000 }).catch(() => null);
+  const scrolled = after ? Math.round(Math.hypot(after.x - box.x, after.y - box.y)) : 0;
+  return { by: cdp ? 'finger' : 'mouse', scrolled };
 }
 
 /** Where a drag goes: a point on another element (fractions of its box), or a distance in CSS pixels. */
