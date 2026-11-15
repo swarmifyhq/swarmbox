@@ -53,7 +53,7 @@ export function registerDeviceTools<W extends ProductWorld>(
       title: 'List the files a world offers for upload',
       description:
         'Files the product made for this world that Swarmbox can’t draw: an export from another system, a bank ' +
-        'file, a spreadsheet to import. Made up, never a real person’s. Take one with prop_take, then file_pick it.',
+        'file, a spreadsheet to import, made by the product for this world. Take one with prop_take, then file_pick it.',
       inputSchema: { world: z.string() },
       annotations: { readOnlyHint: true },
     },

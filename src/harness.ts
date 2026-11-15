@@ -65,7 +65,10 @@ import {
   showOnCamera,
   type DeviceState,
 } from './device/device.ts';
-import { propMaker, type Prop, type PropKind } from './device/props.ts';
+import { PropError, propMaker, type Prop, type PropKind } from './device/props.ts';
+
+/** The largest world file a screen's camera is shown: each page with the camera open gets all of it. */
+const CAMERA_MAX_BYTES = 8 * 2 ** 20;
 
 export type Controller = 'agent' | 'person';
 
@@ -776,6 +779,8 @@ export function createHarness<W extends ProductWorld>(
     } finally {
       // Whatever failed before, its stand-ins stop and their folders go: they're processes of their own.
       await stopStandIns(w.standins);
+      // The files it offered were copies for it.
+      props.dropWorld(w.id);
     }
   }
 
@@ -1495,16 +1500,27 @@ export function createHarness<W extends ProductWorld>(
       const w = getWorld(worldId).world;
       if (!w.files) throw new HarnessError(`${product.name} offers no files for upload; prop_make draws one`);
       const offered = await w.files();
-      const f = offered.find((x) => x.name === name);
-      if (!f)
+      const named = offered.filter((x) => x.name === name);
+      if (named.length > 1)
+        throw new HarnessError(
+          `${worldId} offers ${named.length} files named "${name}"; its product must name them apart`,
+        );
+      if (!named.length)
         throw new HarnessError(
           `${worldId} offers no file "${name}"; it offers ${offered.map((x) => x.name).join(', ') || 'none'}`,
         );
-      return props.take(worldId, f);
+      try {
+        return await props.take(worldId, named[0]!);
+      } catch (e) {
+        if (e instanceof PropError) throw new HarnessError(e.message);
+        throw e;
+      }
     },
     pickFile(screenId, propId) {
       const s = getScreen(screenId);
       const prop = props.get(propId);
+      if (prop.kind === 'file' && prop.world !== s.worldId)
+        throw new HarnessError(`${prop.id} is ${prop.world}'s file; ${screenId} is in ${s.worldId}`);
       s.device.files.push(prop);
       return prop;
     },
@@ -1514,6 +1530,11 @@ export function createHarness<W extends ProductWorld>(
       if (prop?.kind === 'file' && !prop.mime.startsWith('image/'))
         throw new HarnessError(
           `${prop.id} is ${prop.name}, not a picture: a camera can't show it; file_pick it`,
+        );
+      // Every page with the camera open is sent the whole picture, as a data URL.
+      if (prop?.kind === 'file' && prop.bytes > CAMERA_MAX_BYTES)
+        throw new HarnessError(
+          `${prop.id} is ${Math.ceil(prop.bytes / 2 ** 20)} MB; a camera shows at most ${CAMERA_MAX_BYTES / 2 ** 20} MB`,
         );
       showOnCamera(s.device, prop);
     },

@@ -9,8 +9,14 @@ Unreleased; the release names the version.
   spreadsheet to import. `ProductWorld.files()` returns `{name, path, about, mime?}` (`ProductFile`); the agent lists
   them with `world_files {world}` and takes one with `prop_take {world, name}`, which copies it in as a prop of kind
   `file`. `file_pick` then gives it to a file chooser under its own name, by path, so it can be larger than a
-  drawn prop (up to 512 MB). It carries no tag inside (it is the world's own bytes); its sha256 tells it apart.
-  `camera_show` refuses a file that isn't a picture.
+  drawn prop. It carries no tag inside (it is the world's own bytes); its sha256 tells it apart.
+  - Only a regular file is copied, never through a link (a link, a folder, a pipe or a device is refused), up to
+    512 MB counted on the copy, without blocking other worlds. A refusal names the file, never a host path.
+  - Copies live in `<home>/props/<prop id>/` and go when their world stops; past 2 GB of them, the oldest go.
+  - A world's file can be picked only on that world's screens. `camera_show` refuses one that isn't a picture
+    (by its mime), or is over 8 MB. Two offered files with the same name are refused, not guessed between.
+  - For TypeScript: `PropKind` gains `'file'`, and `makeProp` / `PropMaker.make` take `Exclude<PropKind, 'file'>`
+    (a file is taken, not made); `PropMaker.take` and `dropWorld` are new.
 
 ## 0.20.0 (2026-11-14)
 

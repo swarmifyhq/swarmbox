@@ -211,6 +211,18 @@ describe('a world of a product Swarmbox knows nothing about', () => {
       .toBe('Uploaded jobs-export.zip');
     const uploaded = h.world(world).world.uploads.at(-1)!;
     expect(uploaded.name).toBe('jobs-export.zip');
+    // A world's file is for that world's screens only; and it goes when its world stops.
+    const other = /^(w\d+)/.exec((await call('world_create', { tenants: ['south'] })).text)![1]!;
+    const elsewhere = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world: other, person: 'south-ana' })).text,
+    )![1]!;
+    await call('prop_take', { world: other, name: 'jobs-export.zip' });
+    expect((await call('file_pick', { screen: elsewhere, prop: id })).text).toMatch(
+      /is \w+'s file; s\d+ is in w\d+/,
+    );
+    const theirs = h.props().find((p) => p.kind === 'file' && p.world === other)!;
+    await call('world_destroy', { world: other });
+    expect(h.props().some((p) => p.id === theirs.id)).toBe(false);
     expect(uploaded.body.toString()).toMatch(/^PK made-up jobs export for /);
     await call('screen_close', { screen });
   });
