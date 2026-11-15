@@ -159,7 +159,11 @@ export interface ProductWorld {
 export interface ProductFile {
   /** The name a person's file chooser gives it: what the product sees uploaded. */
   name: string;
-  /** Where it is on this machine. Swarmbox copies it when taken, so the world can't change it afterwards. */
+  /**
+   * Where it is on this machine: a regular file of its own (not a link, no second name). Folders on the way are
+   * followed, so keep it in a folder the product can't put links in. Swarmbox copies it when taken, so the world
+   * can't change it afterwards.
+   */
   path: string;
   /** What it is, for the agent: "a Purview export of 16 mailboxes, one corrupt item". */
   about: string;

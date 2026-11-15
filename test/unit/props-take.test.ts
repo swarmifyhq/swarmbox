@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   existsSync,
   linkSync,
+  lutimesSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -15,7 +16,14 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { cameraRefusal, chooseOffered, PropError, propMaker, type Prop } from '../../src/device/props.ts';
+import {
+  cameraRefusal,
+  chooseOffered,
+  PropError,
+  propMaker,
+  sweepProps,
+  type Prop,
+} from '../../src/device/props.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'swarmbox-take-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -76,7 +84,6 @@ describe("a world's file, taken as a prop", () => {
       [link, /is a link/],
       [folder, /isn't a regular file/],
       [fifo, /isn't a regular file/],
-      [join(dir, 'via', 'inside.zip'), /reached through a link/],
       [shared, /other names \(a hard link\)/],
       [join(dir, 'missing.zip'), /can't be read \(ENOENT\)/],
     ] as const;
@@ -86,8 +93,12 @@ describe("a world's file, taken as a prop", () => {
       expect((e as Error).message).toMatch(said);
       expect((e as Error).message).not.toContain(dir);
     }
+    // A folder on the way may be a link (on macOS the temp folder is one): the file itself is what's checked.
+    expect((await take('inside.zip', join(dir, 'via', 'inside.zip'))).name).toBe('inside.zip');
     // No folder is left behind by a refusal.
-    expect(readdirSync(root).filter((f) => !props.list().some((p) => p.id === f))).toEqual([]);
+    expect(
+      readdirSync(root).filter((f) => f.startsWith('prop_') && !props.list().some((p) => p.id === f)),
+    ).toEqual([]);
   });
 
   it('takes the mime it is given, else octet-stream for an unknown kind', async () => {
@@ -109,8 +120,12 @@ describe("a world's file, taken as a prop", () => {
     expect(existsSync(join(root, mine.id))).toBe(false);
     expect(props.list().some((p) => p.world === 'w1')).toBe(false);
     expect(existsSync(other.file)).toBe(true);
+    // A take asked for before its world stopped, but still waiting its turn, is refused.
+    const queued = refusal(take('export.zip', src, 'w2'));
+    props.dropWorld('w2');
+    expect(((await queued) as Error).message).toMatch(/w2 stopped before export.zip was copied/);
     // A take asked for as the harness closes is refused, and leaves nothing.
-    const late = refusal(take('export.zip', src, 'w2'));
+    const late = refusal(take('export.zip', src, 'w3'));
     await props.close();
     expect(((await late) as Error).message).toMatch(/shutting down/);
     expect(readdirSync(root)).toEqual([]);
@@ -133,14 +148,30 @@ describe('limits on world files', () => {
     await props.close();
   });
 
-  it("clears what a killed harness left, older than half a day, and keeps a running one's", () => {
+  it("clears what a killed harness left, older than half a day, entry by entry, and keeps a running one's", () => {
     const root = join(dir, 'left');
     mkdirSync(join(root, 'prop_00000001'), { recursive: true });
     mkdirSync(join(root, 'prop_00000002'));
+    writeFileSync(join(root, 'notes.txt'), 'not a prop');
+    symlinkSync(join(dir, 'nowhere'), join(root, 'prop_00000003')); // a dangling link, aged by itself
     const old = new Date(Date.now() - 13 * 3600_000);
     utimesSync(join(root, 'prop_00000001'), old, old);
-    propMaker(root);
-    expect(readdirSync(root)).toEqual(['prop_00000002']);
+    lutimesSync(join(root, 'prop_00000003'), old, old);
+    utimesSync(join(root, 'notes.txt'), old, old);
+    const props = propMaker(root);
+    expect(readdirSync(root).sort()).toEqual([`.harness-${process.pid}`, 'notes.txt', 'prop_00000002']);
+    return props.close().then(() => expect(existsSync(join(root, `.harness-${process.pid}`))).toBe(false));
+  });
+
+  it('clears nothing while another live harness uses the folder', () => {
+    const root = join(dir, 'shared');
+    mkdirSync(join(root, 'prop_00000001'), { recursive: true });
+    const old = new Date(Date.now() - 13 * 3600_000);
+    utimesSync(join(root, 'prop_00000001'), old, old);
+    writeFileSync(join(root, '.harness-1'), ''); // pid 1 is always alive
+    writeFileSync(join(root, '.harness-999999999'), ''); // and this one never is
+    sweepProps(root);
+    expect(readdirSync(root).sort()).toEqual(['.harness-1', `.harness-${process.pid}`, 'prop_00000001']);
   });
 });
 

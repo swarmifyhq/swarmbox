@@ -6,9 +6,9 @@
 // told apart by its sha256.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { constants, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, open, realpath, rename, rm } from 'node:fs/promises';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { ProductFile } from '../product.ts';
 import { chromium, type Browser } from 'playwright-core';
 
@@ -110,6 +110,7 @@ async function copyRegularFile(
   to: string,
   name: string,
   max: number,
+  deadline: number,
 ): Promise<{ bytes: number; sha256: string }> {
   let source;
   try {
@@ -122,9 +123,11 @@ async function copyRegularFile(
   try {
     const st = await source.stat();
     if (!st.isFile()) throw new PropError(`${name} isn't a regular file`);
-    // O_NOFOLLOW covers the last part of the path only: a folder on the way may be a link, and a file may have
-    // other names (a hard link). Either way it may be a file the world never made.
-    if ((await realpath(from)) !== resolve(from))
+    // O_NOFOLLOW covers the last part of the path only. Folders on the way are followed (on macOS the temp folder
+    // itself sits under a link), so the file is checked against its own folder: it must be that folder's file, not
+    // a link to another. A file with other names (a hard link) may be a file the world never made.
+    const folderReal = await realpath(dirname(resolve(from)));
+    if ((await realpath(from)) !== join(folderReal, basename(from)))
       throw new PropError(`${name} is reached through a link; a world offers its files themselves`);
     if (st.nlink > 1)
       throw new PropError(`${name} has other names (a hard link); a world offers a file of its own`);
@@ -137,6 +140,8 @@ async function copyRegularFile(
       for (let n; (n = (await source.read(chunk, 0, chunk.length, null)).bytesRead) > 0;) {
         bytes += n;
         if (bytes > max) throw new PropError(tooBig(name, bytes, max));
+        if (Date.now() > deadline)
+          throw new PropError(`${name} took over ${TAKE_MS / 60_000} minutes to copy`);
         hash.update(chunk.subarray(0, n));
         await out.write(chunk, 0, n);
       }
@@ -199,6 +204,47 @@ export interface Taken {
 /** Leftovers older than this in the props folder, from a harness that was killed, go when the next one starts. */
 const STALE_MS = 12 * 3600_000;
 
+/** The longest one take may copy for; close() waits for one no longer than this. */
+const TAKE_MS = 10 * 60_000;
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
+/**
+ * Clear what a killed harness left in `dir`: its `prop_` entries older than STALE_MS. Never while another live
+ * harness uses the same folder (each marks it with `.harness-<pid>`), and one entry that can't be removed never
+ * stops the rest. Links are aged by themselves, not their targets. Returns this harness's mark, to remove on close.
+ */
+export function sweepProps(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  let others = false;
+  for (const f of readdirSync(dir)) {
+    const pid = /^\.harness-(\d+)$/.exec(f)?.[1];
+    if (!pid) continue;
+    if (Number(pid) !== process.pid && alive(Number(pid))) others = true;
+    else if (Number(pid) !== process.pid) rmSync(join(dir, f), { force: true });
+  }
+  const mark = join(dir, `.harness-${process.pid}`);
+  writeFileSync(mark, '');
+  if (others) return mark;
+  for (const f of readdirSync(dir)) {
+    if (!f.startsWith('prop_')) continue;
+    try {
+      if (Date.now() - lstatSync(join(dir, f)).mtimeMs > STALE_MS)
+        rmSync(join(dir, f), { recursive: true, force: true });
+    } catch {
+      /* gone already, or not ours to remove: the rest still go */
+    }
+  }
+  return mark;
+}
+
 export interface PropMaker {
   make(kind: Exclude<PropKind, 'file'>, about: string): Promise<Prop>;
   /**
@@ -220,14 +266,8 @@ export function propMaker(
   limits: FileLimits = { fileMax: FILE_MAX_BYTES, totalMax: FILES_TOTAL_MAX_BYTES },
 ): PropMaker {
   const props = new Map<string, Prop>();
-  // A harness that was killed left its props behind; a running one's are newer than this.
-  try {
-    for (const f of readdirSync(dir))
-      if (f.startsWith('prop_') && Date.now() - statSync(join(dir, f)).mtimeMs > STALE_MS)
-        rmSync(join(dir, f), { recursive: true, force: true });
-  } catch {
-    /* no folder yet */
-  }
+  // A harness that was killed left its props behind.
+  const mark = sweepProps(dir);
   // One take at a time; and each world's drops counted, so a copy that finishes after its world stopped goes.
   let takes: Promise<unknown> = Promise.resolve();
   const drops = new Map<string, number>();
@@ -256,12 +296,13 @@ export function propMaker(
     return prop;
   };
 
-  async function takeOne(world: string, f: ProductFile): Promise<Taken> {
+  async function takeOne(world: string, f: ProductFile, dropsBefore: number): Promise<Taken> {
     if (closed) throw new PropError('Swarmbox is shutting down');
+    if ((drops.get(world) ?? 0) !== dropsBefore)
+      throw new PropError(`${world} stopped before ${f.name} was copied`);
     const name = f.name;
     if (!name || name === '.' || name === '..' || basename(name) !== name || name.includes('\0'))
       throw new PropError(`a world's file needs a plain name, not "${name}"`);
-    const dropsBefore = drops.get(world) ?? 0;
     const id = `prop_${randomBytes(4).toString('hex')}`;
     const folder = join(dir, id);
     // In a folder of its own, so the file keeps its name: a chooser given a path names the file by it.
@@ -269,7 +310,7 @@ export function propMaker(
     let copied: { bytes: number; sha256: string };
     try {
       await mkdir(folder, { recursive: true });
-      copied = await copyRegularFile(f.path, `${path}.part`, name, limits.fileMax);
+      copied = await copyRegularFile(f.path, `${path}.part`, name, limits.fileMax, Date.now() + TAKE_MS);
       await rename(`${path}.part`, path);
       if ((drops.get(world) ?? 0) !== dropsBefore || closed)
         throw new PropError(
@@ -372,7 +413,9 @@ export function propMaker(
       return keep(prop);
     },
     take(world, f) {
-      const run = takes.then(() => takeOne(world, f));
+      // The world's drops as it asks, not as its turn comes: a take still queued when its world stops is refused.
+      const dropsAsked = drops.get(world) ?? 0;
+      const run = takes.then(() => takeOne(world, f, dropsAsked));
       takes = run.catch(() => undefined);
       return run;
     },
@@ -400,6 +443,7 @@ export function propMaker(
       // A world's props are for its run: none outlive the harness.
       for (const p of props.values()) remove(p);
       props.clear();
+      rmSync(mark, { force: true });
     },
   };
 }
