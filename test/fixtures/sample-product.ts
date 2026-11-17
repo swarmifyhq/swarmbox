@@ -3,8 +3,10 @@
 // with a dialog that sends a text, and the hooks: a feed that records each send (and the text failing a
 // moment later), a clock, and an inbox.
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { hooksFor, type Hooks } from '../../src/hooks.ts';
@@ -47,6 +49,7 @@ const page = (
 <p role="status" id="status"></p>
 <button type="button" id="photo-btn">Add a photo</button>
 <input type="file" id="photo" accept="image/*" capture="environment" hidden>
+<label>Import jobs <input type="file" id="import" accept=".zip"></label>
 <button type="button" id="cam">Use the camera</button>
 <button type="button" id="where">Where am I</button>
 <button type="button" id="approve">Approve</button>
@@ -68,11 +71,14 @@ const page = (
   const photo = document.getElementById('photo');
   const device = document.getElementById('device');
   document.getElementById('photo-btn').onclick = () => photo.click();
-  photo.onchange = async () => {
-    const f = photo.files[0];
+  const upload = (input) => async () => {
+    const f = input.files[0];
     await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
     device.textContent = 'Uploaded ' + f.name;
   };
+  photo.onchange = upload(photo);
+  const importer = document.getElementById('import');
+  importer.onchange = upload(importer);
   document.getElementById('cam').onclick = async () => {
     const v = document.createElement('video');
     v.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -492,6 +498,7 @@ async function startSample(
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
   const actual = (server.address() as AddressInfo).port;
   let settleCount = 0;
+  const filesDir = mkdtempSync(join(tmpdir(), 'swarmbox-sample-files-'));
   const hooks: Hooks = hooksFor(`http://127.0.0.1:${actual}/_sandbox`, TOKEN);
   return {
     baseDomain: BASE_DOMAIN,
@@ -557,6 +564,12 @@ async function startSample(
           violations: failed ? [{ summary: `${failed} texts failed` }] : [],
         };
       }),
+    // An export from another system, made for this world: what a person would upload to import.
+    files: () => {
+      const path = join(filesDir, 'jobs-export.zip');
+      writeFileSync(path, `PK made-up jobs export for ${tenants.join(', ')}\n`);
+      return [{ name: 'jobs-export.zip', path, about: 'an export of last year’s jobs from the old system' }];
+    },
     notes: () => ['a sample world', ...closed.map((t) => `${t} is closed for the season`)],
     // Its server's log is the requests it served, with a line for each refusal.
     log: ({ lines, match }) =>
@@ -566,6 +579,7 @@ async function startSample(
       // A live stream a screen left open would hold the close.
       server.closeAllConnections();
       await closed;
+      rmSync(filesDir, { recursive: true, force: true });
       if (failStop) throw new Error('the sample shop would not stop cleanly');
     },
   };

@@ -10,7 +10,9 @@ import type { ProductWorld } from '../product.ts';
 
 const text = (t: string): CallToolResult => ({ content: [{ type: 'text', text: t }] });
 const describe = (p: Prop) =>
-  `${p.id}: ${p.kind}, "${p.about}" (${p.name}, ${p.mime}, ${Math.round(p.bytes / 1024)} KB; tagged ${p.tag} inside the file)`;
+  p.kind === 'file'
+    ? `${p.id}: ${p.world}'s file, "${p.about}" (${p.name}, ${p.mime}, ${Math.round(p.bytes / 1024)} KB; sha256 ${p.sha256.slice(0, 12)}…, as the world made it)`
+    : `${p.id}: ${p.kind}, "${p.about}" (${p.name}, ${p.mime}, ${Math.round(p.bytes / 1024)} KB; tagged ${p.tag} inside the file)`;
 
 export function registerDeviceTools<W extends ProductWorld>(
   server: McpServer,
@@ -25,7 +27,8 @@ export function registerDeviceTools<W extends ProductWorld>(
         'Make a prop a person would carry or create: a photo ("a water heater, rusted at the base"), a document ' +
         '(a vendor’s bill, a permit: a PDF) or a signature (a PNG). It is drawn by Swarmbox, never a real file, and ' +
         'tagged with its id inside the file and in a corner, so a check can tell later which one arrived where. ' +
-        'Then give it to a screen with file_pick (an upload, or a phone’s or tablet’s camera button) or camera_show.',
+        'Then give it to a screen with file_pick (an upload, or a phone’s or tablet’s camera button) or camera_show. ' +
+        'For a file Swarmbox can’t draw (an export to import), see world_files.',
       inputSchema: {
         kind: z.enum(['photo', 'document', 'signature']),
         about: z.string().min(1).max(300).describe('What it shows or says'),
@@ -42,6 +45,44 @@ export function registerDeviceTools<W extends ProductWorld>(
       annotations: { readOnlyHint: true },
     },
     async () => guard(async () => text(h.props().map(describe).join('\n') || 'no props yet')),
+  );
+
+  server.registerTool(
+    'world_files',
+    {
+      title: 'List the files a world offers for upload',
+      description:
+        'Files the product made for this world that Swarmbox can’t draw: an export from another system, a bank ' +
+        'file, a spreadsheet to import, made by the product for this world. Take one with prop_take, then file_pick it.',
+      inputSchema: { world: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ world }) =>
+      guard(async () => {
+        const files = await h.worldFiles(world);
+        return text(
+          files.map((f) => `${f.name}: ${f.about}`).join('\n') ||
+            `${world} offers no files; prop_make draws one`,
+        );
+      }),
+  );
+
+  server.registerTool(
+    'prop_take',
+    {
+      title: 'Take a file a world offers, as a prop',
+      description:
+        'Copies one of the world’s files (world_files) in as a prop, under its own name, so file_pick can give it ' +
+        'to a file chooser. Taken again, it is a new prop: the file as the world has it now.',
+      inputSchema: { world: z.string(), name: z.string().min(1).max(200) },
+    },
+    async ({ world, name }) =>
+      guard(async () => {
+        const { prop, evicted } = await h.takeFile(world, name);
+        // Room is made from the oldest copies, any world's: say which went, so a queued pick of one isn't a surprise.
+        const went = evicted.map((p) => `${p.id} (${p.world}'s ${p.name})`).join(', ');
+        return text(describe(prop) + (went ? `\nTo make room, removed: ${went}` : ''));
+      }),
   );
 
   server.registerTool(

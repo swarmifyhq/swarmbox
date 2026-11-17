@@ -98,6 +98,8 @@ What adapters have learnt so far:
   the stack.
 - **In the product's own tests, check for the tools it relies on, not Swarmbox's whole list**: each release adds
   tools.
+- **Offer the files a person would upload** (`files`): an export to import, made up for the world, so an agent
+  can pick it (`world_files`, `prop_take`, `file_pick`) instead of the product growing a tool of its own.
 - **Give each of the product's system tests its own port**, apart from the one a running sandbox uses.
 
 ### In production

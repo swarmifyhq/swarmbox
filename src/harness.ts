@@ -46,7 +46,7 @@ import {
   type Stroke,
 } from './fleet/sight.ts';
 import { HooksMissing, type ClockMove, type ClockState, type FeedItem, type Hooks } from './hooks.ts';
-import type { Persona, Product, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
+import type { Persona, Product, ProductFile, ProductWorld, StandInEndpoint, WorldSpec } from './product.ts';
 import {
   pendingSince,
   requestLog,
@@ -65,7 +65,15 @@ import {
   showOnCamera,
   type DeviceState,
 } from './device/device.ts';
-import { propMaker, type Prop, type PropKind } from './device/props.ts';
+import {
+  cameraRefusal,
+  chooseOffered,
+  PropError,
+  propMaker,
+  type Prop,
+  type PropKind,
+  type Taken,
+} from './device/props.ts';
 
 export type Controller = 'agent' | 'person';
 
@@ -299,8 +307,12 @@ export interface Harness<W extends ProductWorld = ProductWorld> {
   /** The world's hooks, or a refusal saying why there are none. */
   hooks(worldId: string): Promise<Hooks>;
   /** Make a prop: a photo, a document or a signature, tagged with its id. */
-  makeProp(kind: PropKind, about: string): Promise<Prop>;
+  makeProp(kind: Exclude<PropKind, 'file'>, about: string): Promise<Prop>;
   props(): Prop[];
+  /** The files a world offers for upload (ProductWorld.files); none when the product offers none. */
+  worldFiles(worldId: string): Promise<ProductFile[]>;
+  /** Take one of a world's files, by name, as a prop. */
+  takeFile(worldId: string, name: string): Promise<Taken>;
   /** Queue a prop for the screen's next file chooser (a camera button on a phone or tablet is one). */
   pickFile(screenId: string, propId: string): Prop;
   /** Put a prop in front of the screen's camera; null for nothing. */
@@ -772,6 +784,8 @@ export function createHarness<W extends ProductWorld>(
     } finally {
       // Whatever failed before, its stand-ins stop and their folders go: they're processes of their own.
       await stopStandIns(w.standins);
+      // The files it offered were copies for it.
+      props.dropWorld(w.id);
     }
   }
 
@@ -1483,15 +1497,34 @@ export function createHarness<W extends ProductWorld>(
 
     makeProp: (kind, about) => props.make(kind, about),
     props: () => props.list(),
+    async worldFiles(worldId) {
+      const w = getWorld(worldId).world;
+      return w.files ? await w.files() : [];
+    },
+    async takeFile(worldId, name) {
+      const w = getWorld(worldId).world;
+      if (!w.files) throw new HarnessError(`${product.name} offers no files for upload; prop_make draws one`);
+      try {
+        return await props.take(worldId, chooseOffered(worldId, await w.files(), name));
+      } catch (e) {
+        if (e instanceof PropError) throw new HarnessError(e.message);
+        throw e;
+      }
+    },
     pickFile(screenId, propId) {
       const s = getScreen(screenId);
       const prop = props.get(propId);
+      if (prop.kind === 'file' && prop.world !== s.worldId)
+        throw new HarnessError(`${prop.id} is ${prop.world}'s file; ${screenId} is in ${s.worldId}`);
       s.device.files.push(prop);
       return prop;
     },
     async showCamera(screenId, propId) {
       const s = getScreen(screenId);
-      showOnCamera(s.device, propId ? props.get(propId) : null);
+      const prop = propId ? props.get(propId) : null;
+      const refused = prop && cameraRefusal(prop, s.worldId);
+      if (refused) throw new HarnessError(refused);
+      showOnCamera(s.device, prop);
     },
     async setLocation(screenId, latitude, longitude) {
       await setLocation(getScreen(screenId).screen.context, latitude, longitude);

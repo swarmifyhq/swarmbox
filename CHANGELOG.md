@@ -5,6 +5,29 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.21.0 (2026-11-15)
+
+- A world can offer files for upload that Swarmbox can't draw: an export from another system, a bank file, a
+  spreadsheet to import. `ProductWorld.files()` returns `{name, path, about, mime?}` (`ProductFile`); the agent lists
+  them with `world_files {world}` and takes one with `prop_take {world, name}`, which copies it in as a prop of kind
+  `file`. `file_pick` then gives it to a file chooser under its own name, by path, so it can be larger than a
+  drawn prop. It carries no tag inside (it is the world's own bytes); its sha256 tells it apart.
+  - Only a regular file is copied, never through a link (a link, a folder, a pipe or a device is refused), up to
+    512 MB counted on the copy, without blocking other worlds. A refusal names the file, never a host path.
+  - Copies live in `<home>/props/<prop id>/` and go when their world stops; past 2 GB of them, the oldest go (from
+    any world), and `prop_take` says which. Takes run one at a time, so copies in flight never pass the limits
+    together, and each copies for at most 10 minutes. A take asked for before its world stopped, or as Swarmbox
+    shuts down, is refused, or its copy removed once done.
+  - A harness marks its props folder (`.harness-<pid>`). At start it clears `prop_` leftovers older than 12 hours
+    (from a harness that was killed), entry by entry, unless another live harness shares the folder.
+  - The file itself must not be a link, nor have a second name (a hard link). Folders on its path are followed (on
+    macOS the temp folder sits under one), so offer files from a folder the product can't put links in.
+  - A world's file can be picked, or shown on a camera, only on that world's screens. `camera_show` refuses one
+    that isn't a picture (by its mime), or is over 8 MB. Two offered files with the same name are refused, not guessed between.
+  - For TypeScript: `PropKind` gains `'file'`, and `makeProp` / `PropMaker.make` take `Exclude<PropKind, 'file'>`
+    (a file is taken, not made); `PropMaker.take` (returning `{prop, evicted}`) and `dropWorld` are new, and
+    `propMaker` takes optional `FileLimits`.
+
 ## 0.20.0 (2026-11-14)
 
 - `screen_act` `draw` signs with a finger on a phone or tablet screen: real touches through Chromium's input, so the
