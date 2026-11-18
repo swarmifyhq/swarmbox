@@ -409,18 +409,22 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'Something arrives from outside',
       description:
         'Delivered through the real webhooks, signed as the provider would: a customer texts {kind: "sms", from, body} ' +
-        'or rings {kind: "call", from}; a text\'s receipt {kind: "sms-status", providerMessageId, status} (any order, ' +
-        'repeated, late); an email event {kind: "email-event", providerMessageId, event}. Needs the product’s hooks.',
+        'or rings {kind: "call", from} (its result carries the call\'s providerMessageId); that call ending ' +
+        '{kind: "call-status", providerMessageId, status: no-answer|busy|completed|voicemail, duration?} (any order, ' +
+        'repeated, late); a text\'s receipt {kind: "sms-status", providerMessageId, status} (any order, repeated, ' +
+        'late); an email event {kind: "email-event", providerMessageId, event}. Needs the product’s hooks.',
       inputSchema: {
         world: z.string(),
         tenant: z.string(),
-        kind: z.enum(['sms', 'call', 'sms-status', 'email-event']),
+        kind: z.enum(['sms', 'call', 'call-status', 'sms-status', 'email-event']),
         from: z.string().optional(),
         body: z.string().optional(),
         providerMessageId: z.string().optional(),
         status: z.string().optional(),
         errorCode: z.string().optional(),
         event: z.string().optional(),
+        /** a call's length in seconds, as the provider counts it (call-status) */
+        duration: z.int().min(0).max(86_400).optional(),
       },
     },
     async ({ world, tenant, ...b }) =>

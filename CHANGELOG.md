@@ -5,6 +5,11 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- `fake_inbound` can end a call it rang: `{kind: "call-status", providerMessageId, status, duration?}`, with the id
+  `{kind: "call"}` returned, so a missed call (no-answer, busy), a voicemail or a finished call can be played and what
+  it starts (a text-back, a callbacks row) checked. The product's hooks deliver it as its phone provider would; a
+  product whose hooks don't know the kind refuses it as before.
+
 ## 0.21.0 (2026-11-15)
 
 - A world can offer files for upload that Swarmbox can't draw: an export from another system, a bank file, a
