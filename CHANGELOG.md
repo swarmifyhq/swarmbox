@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.22.0 (2026-11-18)
+
 - `fake_inbound` can end a call it rang: `{kind: "call-status", providerMessageId, status, duration?}`, with the id
   `{kind: "call"}` returned, so a missed call (no-answer, busy), a voicemail or a finished call can be played and what
   it starts (a text-back, a callbacks row) checked. The product's hooks deliver it as its phone provider would; a
