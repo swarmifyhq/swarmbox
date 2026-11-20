@@ -5,6 +5,11 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A screen action's `refused:` line now says `then sent again and accepted (the page recovered; nothing showed)`
+  when the page sent the same request again and it was accepted, as an app does after refreshing an expired sign-in.
+  A refusal with no accepted resend reads as before. A tester read such 401s as a fault the person met (Flowology
+  QA-1853).
+
 ## 0.22.0 (2026-11-18)
 
 - `fake_inbound` can end a call it rang: `{kind: "call-status", providerMessageId, status, duration?}`, with the id

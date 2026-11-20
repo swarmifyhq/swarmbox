@@ -1186,10 +1186,18 @@ export function createHarness<W extends ProductWorld>(
       await feedCursor(w, s.persona.tenant);
       const earlier = w.feedAt.has(s.persona.tenant) ? await serverSince(w, s) : [];
       const origin = w.fleet.originFor(s.persona.tenant);
-      const refused: Promise<string>[] = [];
+      // A refusal the page answers by sending the same request again, accepted this time (a sign-in refreshed
+      // and resent), is said as recovered: the person saw nothing, and a bare 401 read as a fault (QA-1853).
+      const refused: { key: string; at: number; line: Promise<string> }[] = [];
+      const acceptedAt = new Map<string, number>();
+      let responses = 0;
       const onResponse = (r: PwResponse) => {
-        if (r.status() >= 400 && r.url().startsWith(origin))
-          refused.push(refusal(r, origin, s.requests.seqOf(r.request())));
+        if (!r.url().startsWith(origin)) return;
+        const key = `${r.request().method()} ${r.url().slice(origin.length).split('?')[0]}`;
+        const at = responses++;
+        if (r.status() >= 400)
+          refused.push({ key, at, line: refusal(r, origin, s.requests.seqOf(r.request())) });
+        else acceptedAt.set(key, at);
       };
       page.on('response', onResponse);
       let did = '';
@@ -1373,7 +1381,13 @@ export function createHarness<W extends ProductWorld>(
           server.push(...(await serverSince(w, s)));
         }
       }
-      const refusals = await Promise.all(refused);
+      const refusals = await Promise.all(
+        refused.map(async (x) =>
+          (acceptedAt.get(x.key) ?? -1) > x.at
+            ? `${await x.line}, then sent again and accepted (the page recovered; nothing showed)`
+            : x.line,
+        ),
+      );
       const report = [
         `did: ${did}`,
         `changed: ${changed.length ? changed.join('; ') : 'nothing a person would notice'}`,

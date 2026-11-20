@@ -438,6 +438,15 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     expect(approve.text).toMatch(
       /refused: POST \/api\/approve → 400 Only an approver can approve this\. \(screen_requests #(\d+)\)/,
     );
+    expect(approve.text).not.toContain('sent again');
+    // A refusal the page recovers from by sending again is said as recovered, not as a bare 401 (QA-1853).
+    const push = await call('screen_act', {
+      screen,
+      action: { kind: 'click', role: 'button', name: 'Send changes' },
+    });
+    expect(push.text).toMatch(
+      /refused: POST \/api\/sync\/push → 401 Sign in again\. \(screen_requests #\d+\), then sent again and accepted \(the page recovered; nothing showed\)/,
+    );
     const seq = Number(/screen_requests #(\d+)/.exec(approve.text)![1]);
     await call('screen_act', { screen, action: { kind: 'click', role: 'button', name: 'Listen' } });
 
