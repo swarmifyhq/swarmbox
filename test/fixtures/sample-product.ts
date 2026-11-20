@@ -53,6 +53,7 @@ const page = (
 <button type="button" id="cam">Use the camera</button>
 <button type="button" id="where">Where am I</button>
 <button type="button" id="approve">Approve</button>
+<button type="button" id="push">Send changes</button>
 <button type="button" id="listen">Listen</button>
 <button type="button" id="sign">Sign</button>
 <a href="/api/export.csv?token=${'e'.repeat(40)}" download>Export jobs</a>
@@ -106,6 +107,14 @@ const page = (
       body: JSON.stringify({ note: 'looks right', password: 'hunter2' }),
     });
     document.getElementById('status').textContent = r.ok ? 'Approved.' : 'Could not approve.';
+  };
+  // An expired sign-in: refused once, then the page refreshes it and sends again, as the tech app's sync does.
+  document.getElementById('push').onclick = async () => {
+    const send = (fresh) =>
+      fetch('/api/sync/push', { method: 'POST', headers: fresh ? { 'x-fresh-sign-in': '1' } : {} });
+    let r = await send(false);
+    if (r.status === 401) r = await send(true);
+    document.getElementById('status').textContent = r.ok ? 'All sent.' : 'Not sent.';
   };
   // Signing takes the server a while (a seal), then the page swaps to its receipt in place, at the same address.
   document.getElementById('sign').onclick = async () => {
@@ -411,6 +420,10 @@ async function startSample(
         setTimeout(() => json(200, { ok: true }), 1500);
         return;
       }
+      if (url.pathname === '/api/sync/push' && req.method === 'POST')
+        return req.headers['x-fresh-sign-in']
+          ? json(200, { ok: true })
+          : json(401, { detail: 'Sign in again.' });
       if (url.pathname === '/api/approve' && req.method === 'POST')
         return json(400, { detail: 'Only an approver can approve this.' });
       if (url.pathname === '/api/live/stream') {
