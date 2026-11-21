@@ -5,6 +5,11 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+- A finger drawing sideways on a tablet no longer sends the screen back a page. Chromium went back on a sideways
+  swipe anywhere on a touch screen that couldn't scroll that way (its overscroll history navigation); an iPad goes
+  back only on a swipe from the screen's edge. A signature on a pad that let the touch through left the screen on
+  `about:blank`, so the tablet couldn't be checked (Flowology QA-1660). Screens launch with
+  `--disable-features=OverscrollHistoryNavigation`, exported as `DEVICE_LIKE_FLAGS`.
 - A screen action's `refused:` line now says `then sent again and accepted (the page recovered; nothing showed)`
   when the page sent the same request again and it was accepted, as an app does after refreshing an expired sign-in.
   A refusal with no accepted resend reads as before. A tester read such 401s as a fault the person met (Flowology
