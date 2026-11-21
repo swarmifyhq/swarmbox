@@ -5,7 +5,7 @@
 // dialog that timed out with no reason given, and a signature pad only a pointer can sign.
 
 import { chromium, type Browser, type Page } from 'playwright-core';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 import {
   behindModal,
   changes,
@@ -16,6 +16,7 @@ import {
   pickAmong,
   whyNotClicked,
 } from '../src/fleet/sight.ts';
+import { DEVICE_LIKE_FLAGS } from '../src/fleet/browser.ts';
 
 let browser: Browser;
 let page: Page;
@@ -209,6 +210,25 @@ describe('drawing', () => {
       return { strokes: w.strokes, kinds: [...w.kinds] };
     });
     expect(seen).toEqual({ strokes: 2, kinds: ['touch'] });
+  });
+
+  // A sideways stroke on a pad that lets the touch through went back a page on a tablet: Chromium's overscroll
+  // history navigation, which an iPad does only from the screen's edge (Flowology QA-1660, iPad control).
+  it('stays on the page when a finger draws sideways on a tablet across a pad that lets the touch through', async () => {
+    // launched as the fleet launches it: the default headless shell has no such swipe, so it would pass anyway
+    const full = await chromium.launch({ channel: 'chromium', args: [...DEVICE_LIKE_FLAGS] });
+    onTestFinished(() => full.close());
+    const p = await (
+      await full.newContext({ viewport: { width: 1180, height: 820 }, isMobile: true, hasTouch: true })
+    ).newPage();
+    // as wide as an iPad's pad: a short stroke never reaches the swipe's threshold
+    const wide = `<canvas width="900" height="200" aria-label="Signature pad" style="touch-action:auto"></canvas>`;
+    const url = `data:text/html,${encodeURIComponent(wide)}`;
+    await p.goto(url);
+    const got = await draw(p, p.getByLabel('Signature pad'));
+    expect(got.by).toBe('finger');
+    await p.waitForTimeout(1000);
+    expect(p.url()).toBe(url);
   });
 
   it('says how far the page moved when a finger on the pad scrolls it instead of drawing', async () => {
