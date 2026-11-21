@@ -5,6 +5,8 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.23.0 (2026-11-21)
+
 - A finger drawing sideways on a tablet no longer sends the screen back a page. Chromium went back on a sideways
   swipe anywhere on a touch screen that couldn't scroll that way (its overscroll history navigation); an iPad goes
   back only on a swipe from the screen's edge. A signature on a pad that let the touch through left the screen on
