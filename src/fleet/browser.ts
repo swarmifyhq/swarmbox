@@ -278,6 +278,14 @@ export interface Fleet {
   close(): Promise<void>;
 }
 
+/**
+ * Flags that keep Chromium's touch screens behaving as a phone or tablet does. A finger moved sideways across a page
+ * that can't scroll that way went back a page in Chromium (its overscroll history navigation, anywhere on the
+ * screen), where an iPad goes back only on a swipe from the screen's edge: a sideways signature on a pad that let
+ * the touch through sent the screen back to about:blank (Flowology QA-1660, iPad control, 21 Nov).
+ */
+export const DEVICE_LIKE_FLAGS: readonly string[] = ['--disable-features=OverscrollHistoryNavigation'];
+
 export async function launchFleet(options: FleetOptions): Promise<Fleet> {
   const browsers = new Map<string, Promise<Browser>>();
   const launch = (origin: string): Promise<Browser> =>
@@ -294,6 +302,7 @@ export async function launchFleet(options: FleetOptions): Promise<Fleet> {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
+        ...DEVICE_LIKE_FLAGS,
       ],
       ...(options.slowMo === undefined ? {} : { slowMo: options.slowMo }),
       // Signals are Swarmbox's (serve): it stops every world, then closes the browsers. Left to Playwright, Ctrl-C

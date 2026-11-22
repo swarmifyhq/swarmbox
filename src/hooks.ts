@@ -13,7 +13,7 @@
 //   GET  /feed?company&after&limit     what happened in a tenant, in order, from a cursor
 //   GET  /messages?company&to&after    one recipient's texts and emails, as the fakes delivered them
 //   GET|POST|DELETE /fakes             the fake providers' rules
-//   POST /fakes/inbound                something arrives from outside (a text, a call, a receipt)
+//   POST /fakes/inbound                something arrives from outside (a text, a call, its end, a receipt)
 //
 // Every answer is {ok: true, result} or {ok: false, error: {code, message}}. A feed row is {cursor, kind,
 // at, ...}; for kind "action": name, actionKind (command|query), outcome (ok|rejected|forbidden|error),
