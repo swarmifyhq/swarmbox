@@ -17,6 +17,7 @@ import { DEVICES, type Device } from '../fleet/browser.ts';
 import { registerDeviceTools } from './device.ts';
 import { parseKey, totp } from './authenticator.ts';
 import { readInbox } from './inbox.ts';
+import { FEED_LINE_CHARS, feedText, type Page } from './feed-text.ts';
 import { registerStandInTools } from './standins.ts';
 import { describeProvenance } from '../provenance.ts';
 import { REQUESTS_KEPT, requestLine } from '../requests.ts';
@@ -218,14 +219,6 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
   );
 
   const hooksOf = (world: string) => h.hooks(world);
-  const feedText = (p: { items: Record<string, unknown>[]; next: string; lagMs: number }) =>
-    [
-      `${p.items.length} items; next ${p.next}; lag ${p.lagMs} ms`,
-      ...p.items.map((i) => {
-        const { cursor, kind, at, ...rest } = i;
-        return `${String(at)}  ${String(kind).padEnd(8)} ${JSON.stringify(rest).slice(0, 400)}  [${String(cursor)}]`;
-      }),
-    ].join('\n');
 
   server.registerTool(
     'world_clock',
@@ -288,10 +281,16 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         after: z.string().optional(),
         queries: z.boolean().optional().describe('Include screen reads too'),
         limit: z.int().min(1).max(500).optional(),
+        whole: z
+          .boolean()
+          .optional()
+          .describe(
+            `Show every item whole; by default a line longer than ${FEED_LINE_CHARS} characters is cut, and says so`,
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ world, tenant, after, queries, limit }) =>
+    async ({ world, tenant, after, queries, limit, whole }) =>
       guard(async () => {
         const hooks = await hooksOf(world);
         return text(
@@ -300,7 +299,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               ...(after ? { after } : {}),
               ...(queries ? { queries } : {}),
               ...(limit ? { limit } : {}),
-            })) as never,
+            })) as Page,
+            whole ? {} : { clipAt: FEED_LINE_CHARS, whole: 'whole: true shows it all' },
           ),
         );
       }),
@@ -311,7 +311,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
     {
       title: 'A phone’s or inbox’s messages',
       description:
-        `Every text and email between the ${noun} and one number or address, as the fakes delivered them: ` +
+        `Every text and email between the ${noun} and one number or address, whole, as the fakes delivered them: ` +
         'the phone a customer holds. ' +
         (product.platformMailbox
           ? `With them, what ${product.name} sent that person as itself, not as a ${noun} (sign-in codes, invites, ` +
@@ -331,7 +331,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         const hooks = await hooksOf(world);
         const t = tenant ?? h.world(world).world.tenants[0]!;
         const page = await readInbox(hooks, t, to, after, product.platformMailbox);
-        return text([feedText(page as never), ...(page.note ? [page.note] : [])].join('\n'));
+        return text([feedText(page as Page), ...(page.note ? [page.note] : [])].join('\n'));
       }),
   );
 
@@ -702,7 +702,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       description:
         'Airplane mode and weak signal for one screen. offline: no network at all. stall: requests matching `match` ' +
         '(a URL glob, e.g. "**/sync/**") get no answer and no error, as on a weak signal. slow: matching requests are ' +
-        'answered delayMs late. online: back to normal. Requests failing because of this are not reported as findings.',
+        'answered delayMs late. online: back to normal. Leaving a stall sends what it held on to the server, late (going ' +
+        'offline cuts it off instead). Requests failing because of this are not reported as findings.',
       inputSchema: {
         screen: z.string(),
         mode: z.enum(['online', 'offline', 'stall', 'slow']),

@@ -5,6 +5,17 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.24.0 (2026-11-24)
+
+- `phone_inbox` shows each text and email whole. `feed_read` still cuts a line at 400 characters, but now says so
+  and how much is left, and `whole: true` shows every item in full. Both used to cut each item at 400 characters
+  without a mark, so an invitation email read as ending at "Once" and its two-factor sentence was never seen
+  (Flowology QA-1294).
+- Leaving a `screen_network` stall sends the requests it held on to the server, as a signal that comes back does;
+  only going offline cuts them off (`connectionaborted`). Before, every held request was aborted on release, so the
+  app showed its offline state ("No connection") the moment the stall ended. `Screen.releaseStalled` takes
+  `'continue' | 'abort'`.
+
 ## 0.23.0 (2026-11-21)
 
 - A finger drawing sideways on a tablet no longer sends the screen back a page. Chromium went back on a sideways
