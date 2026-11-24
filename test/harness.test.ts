@@ -481,6 +481,38 @@ describe('a world of a product Swarmbox knows nothing about', () => {
     await call('screen_close', { screen });
   });
 
+  it('sends what a stall held on to the server when the signal comes back, and cuts it off only going offline', async () => {
+    const screen = /^screen (s\d+)/.exec(
+      (await call('screen_open', { world, person: 'north-ana' })).text,
+    )![1]!;
+    const approve = { kind: 'click', role: 'button', name: 'Approve' };
+    // Back online: the held request reaches the server and the page gets its own answer, late.
+    expect((await call('screen_network', { screen, mode: 'stall', match: '**/api/approve' })).error).toBe(
+      false,
+    );
+    await call('screen_act', { screen, action: approve });
+    expect((await call('screen_network', { screen, mode: 'online' })).error).toBe(false);
+    await expect
+      .poll(async () => (await call('screen_requests', { screen, match: '/api/approve' })).text, {
+        timeout: 5000,
+      })
+      .toContain('POST /api/approve → 400');
+    expect((await call('screen_requests', { screen, match: '/api/approve' })).text).not.toContain('failed');
+    // Offline: what was held is cut off, as a dropped connection.
+    const seen = (await call('screen_requests', { screen })).text.match(/^#(\d+)/gm)!.length;
+    await call('screen_network', { screen, mode: 'stall', match: '**/api/approve' });
+    await call('screen_act', { screen, action: approve });
+    await call('screen_network', { screen, mode: 'offline' });
+    await expect
+      .poll(async () => (await call('screen_requests', { screen, match: '/api/approve' })).text, {
+        timeout: 5000,
+      })
+      .toMatch(/POST \/api\/approve → failed/);
+    expect((await call('screen_requests', { screen })).text.match(/^#(\d+)/gm)!.length).toBeGreaterThan(seen);
+    await call('screen_network', { screen, mode: 'online' });
+    await call('screen_close', { screen });
+  });
+
   it('says what an action downloaded, and reads the file back with its secrets redacted', async () => {
     const screen = /^screen (s\d+)/.exec(
       (await call('screen_open', { world, person: 'north-ana' })).text,

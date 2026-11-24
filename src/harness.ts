@@ -116,8 +116,11 @@ export interface ScreenEntry {
   /** Whether this screen's browser clock follows the world's (once the world's clock has moved). */
   clockInstalled?: boolean;
   network: NetworkMode;
-  /** Cut off every request the screen's network is holding (a stall), as a dropped connection does. */
-  releaseStalled(): void;
+  /**
+   * Let go of every request the screen's network is holding (a stall): 'continue' sends each on to its
+   * server late, as a weak signal that comes back does; 'abort' cuts each off, as a dropped connection does.
+   */
+  releaseStalled(how: 'continue' | 'abort'): void;
   /** Its camera and the files queued for its file choosers. */
   device: DeviceState;
   /** What it asked its servers for, newest last (bounded, secrets redacted). */
@@ -1009,8 +1012,14 @@ export function createHarness<W extends ProductWorld>(
       device,
       requests,
       downloads,
-      releaseStalled: () => {
+      releaseStalled: (how) => {
         for (const route of stalled) {
+          if (how === 'continue') {
+            // Sent on now, late: the page gets the server's own answer, as after a weak signal (a request the
+            // page has itself given up on meanwhile can't be sent, and needs nothing more).
+            void route.continue().catch(() => undefined);
+            continue;
+          }
           deliberate.add(route.request());
           cutUrls.add(route.request().url());
           void route.abort('connectionaborted').catch(() => undefined);
@@ -1148,8 +1157,11 @@ export function createHarness<W extends ProductWorld>(
     async setNetwork(screenId, mode) {
       const s = getScreen(screenId);
       // The screen's one network route (attach) reads the mode on every request, so a change is just
-      // this: let go of anything a stall is holding, then say what the network does now.
-      s.releaseStalled();
+      // this: let go of anything a stall is holding, then say what the network does now. Going offline cuts
+      // what was held off; any other mode sends it on late, so the page sees a slow answer and not a dropped
+      // connection it never had (Flowology run 1159: an 'online' that aborted a stalled read drew the
+      // product's "No connection" line, reported as the product's).
+      s.releaseStalled(mode.mode === 'offline' ? 'abort' : 'continue');
       await s.screen.context.setOffline(mode.mode === 'offline');
       s.network = mode;
     },

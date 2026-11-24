@@ -702,7 +702,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       description:
         'Airplane mode and weak signal for one screen. offline: no network at all. stall: requests matching `match` ' +
         '(a URL glob, e.g. "**/sync/**") get no answer and no error, as on a weak signal. slow: matching requests are ' +
-        'answered delayMs late. online: back to normal. Requests failing because of this are not reported as findings.',
+        'answered delayMs late. online: back to normal. Leaving a stall sends what it held on to the server, late (going ' +
+        'offline cuts it off instead). Requests failing because of this are not reported as findings.',
       inputSchema: {
         screen: z.string(),
         mode: z.enum(['online', 'offline', 'stall', 'slow']),
