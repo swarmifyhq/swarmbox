@@ -371,7 +371,8 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
       title: 'Make a provider misbehave',
       description:
         'Rules the fake providers obey, everywhere in the product: e.g. {provider: "sms", rule: "fail_next"}, ' +
-        '"reject", "bounce", "hang_next". count limits how many sends it applies to. action "list" shows them, "clear" ' +
+        '"reject", "bounce", "hang_next". count limits how many sends it applies to; param is what the rule carries, ' +
+        'as the product reads it (e.g. {delayMs: 35000} for a rule that waits). action "list" shows them, "clear" ' +
         'removes all. Needs the product’s hooks.',
       inputSchema: {
         world: z.string(),
@@ -381,9 +382,13 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
         tenant: z.string().optional(),
         to: z.string().optional(),
         count: z.int().positive().optional(),
+        param: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('What the rule carries, passed to the product as it is, e.g. {delayMs: 35000}'),
       },
     },
-    async ({ world, action, provider, rule, tenant, to, count }) =>
+    async ({ world, action, provider, rule, tenant, to, count, param }) =>
       guard(async () => {
         const hooks = await hooksOf(world);
         if (action === 'list') return text(JSON.stringify(await hooks.fakeRules(), null, 2));
@@ -397,6 +402,7 @@ export function buildServer<W extends ProductWorld>(h: Harness<W>, runs: Runs = 
               ...(tenant ? { company: tenant } : {}),
               ...(to ? { to } : {}),
               ...(count ? { count } : {}),
+              ...(param ? { param } : {}),
             }),
           ),
         );

@@ -78,6 +78,22 @@ describe('the hooks client', () => {
     expect(seen.at(-1)!.url).toBe('/_sandbox/fakes');
   });
 
+  it('sends a fake rule’s param as it is, for a rule that waits (Flowology QA-1964)', async () => {
+    await hooksFor(base(), TOKEN).addFakeRule({
+      provider: 'card_refund',
+      rule: 'approve_after',
+      count: 1,
+      param: { delayMs: 35_000 },
+    });
+    expect(seen.at(-1)).toMatchObject({ method: 'POST', url: '/_sandbox/fakes' });
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({
+      provider: 'card_refund',
+      rule: 'approve_after',
+      count: 1,
+      param: { delayMs: 35_000 },
+    });
+  });
+
   it('says what the product refused, with its code', async () => {
     await expect(hooksFor(base(), TOKEN).moveClock({ to: '2000-01-01T00:00:00Z' })).rejects.toThrow(
       /409 clock_backwards: The sandbox clock only moves forward/,
