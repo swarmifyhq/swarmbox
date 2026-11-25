@@ -5,6 +5,13 @@ Unreleased; the release names the version.
 
 ## Unreleased
 
+## 0.25.0 (2026-11-25)
+
+- `fake_rule` takes a `param` and passes it to the product's `/fakes` hook as it is, for a rule that carries a
+  value, such as `{delayMs: 35000}` for a fake that waits before it answers. Before this, a rule's param could
+  not be set from a session, so a card refund held past 30 s and then approved could not be staged
+  (Flowology QA-1964).
+
 ## 0.24.0 (2026-11-24)
 
 - `phone_inbox` shows each text and email whole. `feed_read` still cuts a line at 400 characters, but now says so
