@@ -52,6 +52,8 @@ export interface FakeRule {
   company?: string;
   to?: string;
   count?: number;
+  /** What the rule carries, as the product reads it: e.g. { delayMs } for a rule that waits. */
+  param?: Record<string, unknown>;
 }
 
 export interface Hooks {
